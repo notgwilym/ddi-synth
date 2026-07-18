@@ -1,0 +1,11 @@
+{
+    "python.defaultInterpreterPath": "/root/nfs/env/bin/python",
+    "jupyter.kernels.filter": [
+        {
+            "path": "/opt/miniconda3/bin/python",
+            "type": "pythonEnvironment"
+        }
+    ],
+    "editor.formatOnSave": true,
+    "notebook.formatOnSave.enabled": true
+}
