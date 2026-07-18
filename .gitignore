@@ -1,0 +1,17 @@
+# data — regenerate from code, don't version
+DDICorpusBrat/
+*.zip
+*.parquet
+
+# caches / checkpoints
+__pycache__/
+.ipynb_checkpoints/
+biomedbert_classifier/
+.stats_cache/
+
+# env (venv lives on nfs outside this dir anyway, but just in case)
+env/
+.venv/
+
+# adjacent work
+adjacent_work/
