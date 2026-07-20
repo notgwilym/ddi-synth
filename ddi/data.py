@@ -38,20 +38,53 @@ def make_sentence_level(doc, nlp = spacy.load("en_core_web_sm")):
 import itertools
 
 def make_pair_instances(doc):
-    candidate_to_label = {}
-    for rel in doc.relations:
-        candidate_to_label[(rel.arguments['Arg1'], rel.arguments['Arg2'])] = rel.type
+  candidate_to_label = {}
+  for rel in doc.relations:
+      candidate_to_label[(rel.arguments['Arg1'], rel.arguments['Arg2'])] = rel.type
 
-    entities = sorted(doc.entities, key=lambda e: e.locations.begin())
+  entities = sorted(doc.entities, key=lambda e: e.locations.begin())
 
-    labelled_data = []
-    for e1, e2 in itertools.combinations(entities, 2):
-        inserts = [(e1.locations.begin(), '[E1]'), (e1.locations.end(), '[/E1]'),
-                   (e2.locations.begin(), '[E2]'), (e2.locations.end(), '[/E2]')]
-        inserts = sorted(inserts, key=lambda x: x[0], reverse=True)
-        new_text = doc.text
-        for pos, tag in inserts:
-            new_text = new_text[:pos] + tag + new_text[pos:]
-        label = candidate_to_label.get((e1.id, e2.id)) or candidate_to_label.get((e2.id, e1.id)) or 'NONE'
-        labelled_data.append({'text': new_text, 'label': label, 'source': doc.register})
-    return labelled_data
+  labelled_data = []
+  for e1, e2 in itertools.combinations(entities, 2):
+      inserts = [(e1.locations.begin(), '[E1]'), (e1.locations.end(), '[/E1]'),
+                 (e2.locations.begin(), '[E2]'), (e2.locations.end(), '[/E2]')]
+      inserts = sorted(inserts, key=lambda x: x[0], reverse=True)
+      new_text = doc.text
+      for pos, tag in inserts:
+          new_text = new_text[:pos] + tag + new_text[pos:]
+      label = candidate_to_label.get((e1.id, e2.id)) or candidate_to_label.get((e2.id, e1.id)) or 'NONE'
+      labelled_data.append({'text': new_text, 'label': label, 'source': doc.register})
+  return labelled_data
+  
+from sklearn.model_selection import train_test_split
+
+def build_human(val_split=0.2, seed=42):
+  docs = load_brat_docs(split="Train")
+  train_docs, val_docs = train_test_split(docs, test_size=val_split, random_state=seed)
+  
+  nlp = spacy.load("en_core_web_sm")
+  train_instances = []
+  for doc in train_docs:
+    for sent in make_sentence_level(doc, nlp):
+      train_instances.extend(make_pair_instances(sent))
+  val_instances = []
+  for doc in val_docs:  
+    for sent in make_sentence_level(doc, nlp):
+      val_instances.extend(make_pair_instances(sent))
+  return (train_instances, val_instances)
+
+import random
+
+def downsample_train_negatives(records, negative_ratio=None, seed=42):
+    rng = random.Random(seed)
+    positive_data = [x for x in records if x['label'] != 'NONE']
+    negative_data = [x for x in records if x['label'] == 'NONE']
+
+    if negative_ratio is not None:
+        k = min(len(negative_data), int(negative_ratio * len(positive_data)))
+        smaller_data = positive_data + rng.sample(negative_data, k)
+    else:
+        smaller_data = positive_data + negative_data
+
+    rng.shuffle(smaller_data)
+    return smaller_data
