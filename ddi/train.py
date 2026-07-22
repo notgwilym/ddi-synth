@@ -10,13 +10,8 @@ from .data import ALL_LABELS, MARKERS, POSITIVE_LABELS
 
 def build_tokenizer(cfg):
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
-    
-    if cfg["marker_init"] == "subword":
-        return tok, None
-    # capture pieces before adding to tokeniser so that we can use them to initialise the embeddings
-    pieces = {m: tok.convert_tokens_to_ids(tok.tokenize(m)) for m in MARKERS}
     tok.add_tokens(MARKERS)
-    return tok, pieces
+    return tok
 
 def score(y_true, y_pred, sources, label2id):
     pos_ids = [label2id[l] for l in POSITIVE_LABELS]
@@ -64,21 +59,13 @@ def train_and_eval(cfg, train_records, val_records):
     label2id = {l: i for i, l in enumerate(ALL_LABELS)}
     id2label = {i: l for l, i in label2id.items()}
     
-    tok, pieces = build_tokenizer(cfg)
+    tok = build_tokenizer(cfg)
     train_ds = prep(train_records)
     val_ds = prep(val_records)
-    
-    model = AutoModelForSequenceClassification.from_pretrained(cfg["model_name"], num_labels=len(ALL_LABELS), id2label=id2label, label2id=label2id, use_safetensors=True)
-    
-    if cfg["marker_init"] != "subword":
-        model.resize_token_embeddings(len(tok))
 
-    if cfg["marker_init"] == "mean":
-        with torch.no_grad():
-            emb = model.get_input_embeddings().weight
-            for m_tok, ids in pieces.items():
-                emb[tok.convert_tokens_to_ids(m_tok)] = emb[ids].mean(dim=0)
-    
+    model = AutoModelForSequenceClassification.from_pretrained(cfg["model_name"], num_labels=len(ALL_LABELS), id2label=id2label, label2id=label2id, use_safetensors=True)
+    model.resize_token_embeddings(len(tok))
+
     training_args = TrainingArguments(
         output_dir="/tmp/ddi_out",
         learning_rate=cfg["lr"],
