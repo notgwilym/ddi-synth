@@ -101,7 +101,7 @@ correct or poison.
 
 ---
 
-## Infrastructure (set up, week 1)
+## Infrastructure
 
 - Compute: various GPUs via Launcher ephemeral pods (2-hour idle timeout,
   container FS wiped on restart). Persistent storage at `/root/nfs`.
@@ -115,14 +115,31 @@ correct or poison.
 
 ---
 
+## Human baseline results
+
+| marker_init | neg_ratio | micro-F1 | P | R |
+|---|---|---|---|---|
+| mean | 2 | 0.791 ± 0.026 | 0.732 ± 0.041 | 0.861 ± 0.015 |
+| mean | 5 | 0.820 ± 0.012 | 0.799 ± 0.023 | 0.844 ± 0.019 |
+| mean | None | 0.841 ± 0.012 | 0.827 ± 0.021 | 0.855 ± 0.004 |
+| random | 2 | 0.793 ± 0.016 | 0.725 ± 0.040 | 0.878 ± 0.021 |
+| random | 5 | 0.833 ± 0.005 | 0.805 ± 0.007 | 0.864 ± 0.011 |
+| **random** | **None** | **0.855 ± 0.008** | **0.847 ± 0.011** | **0.863 ± 0.005** |
+| subword | 2 | 0.773 ± 0.011 | 0.683 ± 0.018 | 0.891 ± 0.004 |
+| subword | 5 | 0.827 ± 0.011 | 0.788 ± 0.004 | 0.870 ± 0.022 |
+| subword | None | 0.839 ± 0.009 | 0.823 ± 0.018 | 0.857 ± 0.001 |
+ 
+**Best baseline: 0.855 micro-F1** (random init, no negative downsampling).
+Tutorial reference: 0.69 (1 epoch, `product` pairing, broken markers).
+ 
+---
+
 ## Current status (end of week 1 setup)
 
 - [x] Problem understood, prior art found and scoped, supervisor aligned
 - [x] Infrastructure: pod persistence, caches, BiomedBERT confirmed cached
 - [x] Harness running
-- [ ] Human annotations baseline
+- [x] Human annotations baseline
 - [ ] Synthetic generation (structured, from scratch)
 - [ ] Ablations, scale curve, mixing curve
 
-Next concrete step: get `build_human()` producing a decent human baseline micro-F1 across
-3 seeds.
