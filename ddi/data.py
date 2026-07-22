@@ -83,29 +83,36 @@ def make_pair_instances(doc):
             or candidate_to_label.get((e2.id, e1.id)) # normally redundant
             or "NONE"
         )
-        labelled_data.append({"text": new_text, "label": label, "source": doc.register, "sent_id": doc.sent_id})
+        labelled_data.append({"text": new_text, "label": label,
+                              "source": doc.register, "sent_id": doc.sent_id})
     return labelled_data
 
 
 from sklearn.model_selection import train_test_split
 
 
-def build_human(val_split=0.2, seed=42):
+def build_human(dev_split=0.15, val_split=0.15, seed=42):
     docs = load_brat_docs(split="Train")
-    train_docs, val_docs = train_test_split(
-        docs, test_size=val_split, random_state=seed
+    
+    train_docs, holdout_docs = train_test_split(
+        docs, test_size=dev_split + val_split, random_state=seed
+    )
+
+    rel_val = val_split / (dev_split + val_split)
+    dev_docs, val_docs = train_test_split(
+        holdout_docs, test_size=rel_val, random_state=seed
     )
 
     nlp = spacy.load("en_core_web_sm")
-    train_instances = []
-    for doc in train_docs:
-        for sent in make_sentence_level(doc, nlp):
-            train_instances.extend(make_pair_instances(sent))
-    val_instances = []
-    for doc in val_docs:
-        for sent in make_sentence_level(doc, nlp):
-            val_instances.extend(make_pair_instances(sent))
-    return (train_instances, val_instances)
+
+    def to_instances(doc_list):
+        out = []
+        for doc in doc_list:
+            for sent in make_sentence_level(doc, nlp):
+                out.extend(make_pair_instances(sent))
+        return out
+
+    return to_instances(train_docs), to_instances(dev_docs), to_instances(val_docs)
 
 
 import random
