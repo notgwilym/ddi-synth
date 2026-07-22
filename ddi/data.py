@@ -78,7 +78,7 @@ def make_pair_instances(doc):
             new_text = new_text[:pos] + tag + new_text[pos:]
         label = (
             candidate_to_label.get((e1.id, e2.id))
-            or candidate_to_label.get((e2.id, e1.id))
+            or candidate_to_label.get((e2.id, e1.id)) # normally redundant
             or "NONE"
         )
         labelled_data.append({"text": new_text, "label": label, "source": doc.register})
