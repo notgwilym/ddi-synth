@@ -17,6 +17,7 @@ def load_brat_docs(split="Train"):
                 ) as text_fp:
                     doc = brat.load(text_fp, ann_fp)
                     doc.register = directory
+                    doc.doc_id = filename.replace(".txt", "")
                     docs.append(doc)
     return docs
 
@@ -27,7 +28,7 @@ from bioc.brat.datastructure import BratDocument
 def make_sentence_level(doc, nlp=spacy.load("en_core_web_sm")):
     parsed = nlp(doc.text)
     sent_docs = []
-    for sent in parsed.sents:
+    for i, sent in enumerate(parsed.sents):
         sent_entities = [
             e
             for e in doc.entities
@@ -46,6 +47,7 @@ def make_sentence_level(doc, nlp=spacy.load("en_core_web_sm")):
         sent_doc.annotations += sent_entities
         sent_doc.annotations += sent_relations
         sent_doc.register = doc.register
+        sent_doc.sent_id = f"human:{doc.register}:{doc.doc_id}:s{i}"
         sent_docs.append(sent_doc)
     return sent_docs
 
@@ -81,7 +83,7 @@ def make_pair_instances(doc):
             or candidate_to_label.get((e2.id, e1.id)) # normally redundant
             or "NONE"
         )
-        labelled_data.append({"text": new_text, "label": label, "source": doc.register})
+        labelled_data.append({"text": new_text, "label": label, "source": doc.register, "sent_id": doc.sent_id})
     return labelled_data
 
 

@@ -2,6 +2,7 @@
 DDICorpusBrat/
 *.zip
 *.parquet
+datasets/instances/
 
 # caches / checkpoints
 __pycache__/
