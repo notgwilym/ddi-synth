@@ -1,6 +1,6 @@
 {
-  "dataset_id": "20260722-232928-760cc5",
-  "created_at": "2026-07-22T23:29:28",
+  "dataset_id": "20260723-032553-e79bce",
+  "created_at": "2026-07-23T03:25:53",
   "provenance": "human:val",
   "generator": null,
   "vocab_source": null,
@@ -20,7 +20,7 @@
   "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
   "sha256": "114dc3ab13c6e8ce70b8c21fc93ef095d4d822ce70ceeed765d7a61d160cd749",
   "leakage_report": null,
-  "git_sha": "382a26568a718168228e3bcbe651c3e0f15c2f27",
+  "git_sha": "d777e52dec01f03c76cb5244ff64c24fe780159b",
   "git_dirty": true,
-  "notes": "val - touch rarely"
+  "notes": "val - finalists only"
 }

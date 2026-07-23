@@ -1,0 +1,462 @@
+diff --git a/.gitignore b/.gitignore
+index 463aa68..f61d3ad 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,6 +4,8 @@ DDICorpusBrat/
+ *.parquet
+ datasets/instances/
+ 
++datasets/other/vocab.json
++
+ # caches / checkpoints
+ __pycache__/
+ .ipynb_checkpoints/
+diff --git a/brief.md b/brief.md
+deleted file mode 100644
+index d1179ce..0000000
+--- a/brief.md
++++ /dev/null
+@@ -1,145 +0,0 @@
+-# Project Brief: Synthetic Training Data for DDI Relation Extraction
+-
+-University of Glasgow, IDA section. 8-week summer internship (week 1, ~July 2026).
+-Supervisor: Jake Lever. Intern: Gwilym.
+-
+----
+-
+-Can a large LLM generate a drug–drug interaction training set from scratch — with
+-no human annotation — that trains a BERT classifier to a useful, honestly benchmarked
+-score on the real DDI-2013 test set?
+-
+-
+-This is a matching-and-benchmarking problem, not primarily a generation problem.
+-Clever prompting and elaborate negative-example taxonomies are not necessarily the point. The point is a trustworthy number: "synthetic data reaches X% of the
+-human-annotated baseline on the real DDI-2013 test set." 
+-
+----
+-
+-## Background & motivation
+-
+-Relation extraction (RE) normally needs expert-annotated corpora which is a major bottleneck when starting a new biomedical RE project. If an LLM can bootstrap a training set from just a description of the target relations, that unblocks many downstream projects. 
+-
+-## The task: DDI-2013
+-
+-- Corpus: DDI-Extraction 2013. Drug–drug interactions. Two registers:
+-  DrugBank (terse drug-label prose) and MedLine (academic abstracts).
+-  Both appear in train and test; report them separately.
+-- Formulation (from the tutorial): relation extraction as text classification.
+-  For each candidate pair of drug entities in a sentence, wrap them in `[E1]..[/E1]`
+-  and `[E2]..[/E2]` markers and classify the pair.
+-- Labels: 4 positive classes — `ADVISE`, `EFFECT`, `MECHANISM`, `INT` — plus
+-  `NONE` (no interaction). ~85% of candidate pairs are `NONE`.
+-- Headline metric: micro-F1 over the four positive classes only. Never
+-  include NONE in the headline (it's trivial and inflates the score). Always report
+-  per-class and per-register breakdowns alongside.
+-- `INT` is tiny (~16 in the tutorial val split). Per-class F1 on it is noise
+-  until evaluated on the full test set. It is also the class most likely to benefit
+-  from synthetic data.
+-
+-### Note
+-At least one DrugBank doc contains duplicated sentence blocks (e.g. TRACRIUM), inflating pair counts. Likely very low count, after simple probe. 
+-
+-## Core architectural principle
+-
+-The trainer and the evaluation set are constant. Only the training data varies.
+-
+-- Eval set: built once from human DDI, true (~15:1) negative ratio intact, never
+-  downsampled, never synthetic, never touched until final test.
+-- Negative downsampling applies to training only, and the ratio is itself a
+-  hyperparameter to sweep (it directly controls the precision/recall trade-off).
+-- Hold out the official DDI test set until final experiments (~week 6). Tune on
+-  validation only.
+-
+----
+-
+-## Prior art
+-
+-1. `Glasgow-AI4BioMed/synthetic_relex` (GitHub + HF dataset, Jake, ~2024).
+-LLM-as-annotator: Llama 3.3 70B labelled real PubTator sentences; distilled into
+-BiomedBERT. Demo work.
+-
+-2. `~/nfs/synth_data_creation/` nested-relations generator (`relation_schema.yml`,
+-`nested_relation_maker.ipynb`, `terms.json`, `nested_relations_dataset.json`).
+-Michael's work (nested relations from human-annotated data).
+-Adjacent piece of Jake's larger puzzle.
+-
+-Key distinction: prior work labelled real sentences. This project generates
+-sentences from scratch, which means it must fabricate negatives — sentences where
+-drugs co-occur but no interaction is asserted. That is the hard, novel part.
+-
+----
+-
+-## Approach & experimental plan
+-
+-### Generating structurally-correct data (the critical detail)
+-DDI classifies pairs within sentences, and most negatives are non-interacting pairs
+-inside sentences that also contain a positive. So: prompt the LLM to produce a
+-sentence with N drugs where a specified subset of pairs interact and the rest do not,
+-then enumerate all pairs as instances (one positive, rest negative). This yields
+-in-distribution negatives for free and forces the model to attend to the entity markers
+-rather than sentence-level topic. Emit the same `{text, label, source, sent_id}`
+-record format as the human pipeline so both flow through identical code.
+-
+-### Negative-example strategies to ablate 
+-Intra-sentence non-participants (highest value); shared-property distractors
+-("both metabolised by CYP3A4"); explicit non-interaction ("no interaction was
+-observed"); comparative; co-medication lists; minimal-perturbation negatives.
+-Check the DDI annotation guidelines: is a negated interaction labelled NONE or a
+-positive class? This determines whether "explicit non-interaction" negatives are
+-correct or poison.
+-
+-### Experiments (rough plan)
+-1. Human-only baseline. Across seeds, with error bars.
+-2. Synthetic-only, size-matched to human train.
+-3. Negative-strategy ablation.
+-4. Scale curve: 1k -> 5k -> 20k -> 100k. Where does it saturate?
+-5. Zero-shot vs few-shot generation.
+-6. Mixing curve: human {0, 10, 25, 50, 100%} x synthetic.
+-   Target finding: "N synthetic examples ≈ M human annotations."
+-7. Best config -> real DDI test set, once.
+-
+----
+-
+-## Infrastructure
+-
+-- Compute: various GPUs via Launcher ephemeral pods (2-hour idle timeout,
+-  container FS wiped on restart). Persistent storage at `/root/nfs`.
+-- LLM endpoint: `gpt-oss-120b`, OpenAI-compatible API
+-  (`http://api.llm.apps.os.dcs.gla.ac.uk/v1`, key in `$IDA_LLM_API_KEY`).
+-  Best throughput ~7 rows/s at 256 concurrent threads. Check for a
+-  `reasoning: {effort: low}` param — output/input ratio ~2.3x suggests wasted CoT.
+-  Also test OpenAI API batch mode to test whether better results than multithreading. 
+-- Editor: VS Code Remote-SSH into the pod; notebooks run against the pod GPU with
+-  `ddi/.py` editable alongside. `%autoreload 2`.
+-
+----
+-
+-## Human baseline results
+-
+-| marker_init | neg_ratio | micro-F1 | P | R |
+-|---|---|---|---|---|
+-| mean | 2 | 0.791 ± 0.026 | 0.732 ± 0.041 | 0.861 ± 0.015 |
+-| mean | 5 | 0.820 ± 0.012 | 0.799 ± 0.023 | 0.844 ± 0.019 |
+-| mean | None | 0.841 ± 0.012 | 0.827 ± 0.021 | 0.855 ± 0.004 |
+-| random | 2 | 0.793 ± 0.016 | 0.725 ± 0.040 | 0.878 ± 0.021 |
+-| random | 5 | 0.833 ± 0.005 | 0.805 ± 0.007 | 0.864 ± 0.011 |
+-| **random** | **None** | **0.855 ± 0.008** | **0.847 ± 0.011** | **0.863 ± 0.005** |
+-| subword | 2 | 0.773 ± 0.011 | 0.683 ± 0.018 | 0.891 ± 0.004 |
+-| subword | 5 | 0.827 ± 0.011 | 0.788 ± 0.004 | 0.870 ± 0.022 |
+-| subword | None | 0.839 ± 0.009 | 0.823 ± 0.018 | 0.857 ± 0.001 |
+- 
+-**Best baseline: 0.855 micro-F1** (random init, no negative downsampling).
+-Tutorial reference: 0.69 (1 epoch, `product` pairing, broken markers).
+- 
+----
+-
+-## Current status (end of week 1 setup)
+-
+-- [x] Problem understood, prior art found and scoped, supervisor aligned
+-- [x] Infrastructure: pod persistence, caches, BiomedBERT confirmed cached
+-- [x] Harness running
+-- [x] Human annotations baseline
+-- [ ] Synthetic generation (structured, from scratch)
+-- [ ] Ablations, scale curve, mixing curve
+-
+diff --git a/datasets/manifests/20260722-225103-19c1a4.json b/datasets/manifests/20260722-225103-19c1a4.json
+deleted file mode 100644
+index 15cb8f9..0000000
+--- a/datasets/manifests/20260722-225103-19c1a4.json
++++ /dev/null
+@@ -1,26 +0,0 @@
+-{
+-  "dataset_id": "20260722-225103-19c1a4",
+-  "created_at": "2026-07-22T22:51:03",
+-  "provenance": "human:val",
+-  "generator": null,
+-  "vocab_source": null,
+-  "negative_strategy": null,
+-  "seed": 42,
+-  "size": {
+-    "n_instances": 7558,
+-    "n_sentences": 815
+-  },
+-  "label_distribution": {
+-    "EFFECT": 368,
+-    "NONE": 6683,
+-    "ADVISE": 180,
+-    "MECHANISM": 311,
+-    "INT": 16
+-  },
+-  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+-  "sha256": "5563643afc212923f01024797a136634cc5c6158b46c37812933b5eba1b30a10",
+-  "leakage_report": null,
+-  "git_sha": "ffa8ed860005a870be89b0d5a81f8c7761e7ec6e",
+-  "git_dirty": true,
+-  "notes": "frozen eval set"
+-}
+\ No newline at end of file
+diff --git a/datasets/manifests/20260722-232927-6ca256.json b/datasets/manifests/20260722-232927-6ca256.json
+deleted file mode 100644
+index ec8eb8d..0000000
+--- a/datasets/manifests/20260722-232927-6ca256.json
++++ /dev/null
+@@ -1,26 +0,0 @@
+-{
+-  "dataset_id": "20260722-232927-6ca256",
+-  "created_at": "2026-07-22T23:29:27",
+-  "provenance": "human:dev",
+-  "generator": null,
+-  "vocab_source": null,
+-  "negative_strategy": null,
+-  "seed": 42,
+-  "size": {
+-    "n_instances": 4243,
+-    "n_sentences": 589
+-  },
+-  "label_distribution": {
+-    "NONE": 3677,
+-    "MECHANISM": 210,
+-    "ADVISE": 126,
+-    "EFFECT": 211,
+-    "INT": 19
+-  },
+-  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+-  "sha256": "63a7bedb77ce0fd9147f58f1b158b8c76734146014a40d417771494164940ff1",
+-  "leakage_report": null,
+-  "git_sha": "382a26568a718168228e3bcbe651c3e0f15c2f27",
+-  "git_dirty": true,
+-  "notes": "dev - iterate here"
+-}
+\ No newline at end of file
+diff --git a/datasets/manifests/20260722-232928-760cc5.json b/datasets/manifests/20260722-232928-760cc5.json
+deleted file mode 100644
+index f828e3d..0000000
+--- a/datasets/manifests/20260722-232928-760cc5.json
++++ /dev/null
+@@ -1,26 +0,0 @@
+-{
+-  "dataset_id": "20260722-232928-760cc5",
+-  "created_at": "2026-07-22T23:29:28",
+-  "provenance": "human:val",
+-  "generator": null,
+-  "vocab_source": null,
+-  "negative_strategy": null,
+-  "seed": 42,
+-  "size": {
+-    "n_instances": 6276,
+-    "n_sentences": 695
+-  },
+-  "label_distribution": {
+-    "ADVISE": 159,
+-    "NONE": 5533,
+-    "EFFECT": 294,
+-    "MECHANISM": 277,
+-    "INT": 13
+-  },
+-  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+-  "sha256": "114dc3ab13c6e8ce70b8c21fc93ef095d4d822ce70ceeed765d7a61d160cd749",
+-  "leakage_report": null,
+-  "git_sha": "382a26568a718168228e3bcbe651c3e0f15c2f27",
+-  "git_dirty": true,
+-  "notes": "val - touch rarely"
+-}
+\ No newline at end of file
+diff --git a/test.ipynb b/test.ipynb
+index dc2568d..d4f2cbf 100644
+--- a/test.ipynb
++++ b/test.ipynb
+@@ -7,17 +7,15 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.data import build_human, downsample_train_negatives\n",
+-    "from ddi.train import train_and_eval\n",
+-    "from ddi.experiment import log_run\n",
++    "import os\n",
++    "from openai import OpenAI\n",
+     "\n",
+-    "train, val = build_human()\n",
+-    "tr = downsample_train_negatives(train, 5)\n",
+-    "cfg = {'model_name':'microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext',\n",
+-    "       'marker_init':'mean','epochs':3,'lr':2e-5,'batch_size':32,'max_length':256,'seed':0}\n",
+-    "metrics = train_and_eval(cfg, tr, val)\n",
+-    "\n",
+-    "log_run({**cfg, \"neg_ratio\": 5, \"dataset\": \"human\"}, metrics, notes=\"first working baseline\")"
++    "from ddi.data import build_human\n",
++    "from ddi.manifest import write_dataset\n",
++    "from ddi.vocab import build_vocab\n",
++    "from ddi.prompt import make_specs, make_sample_fn, prompt_fingerprint\n",
++    "from ddi.synth import generate_raw, build_dataset_from_raw\n",
++    "from ddi.run import run_training"
+    ]
+   },
+   {
+@@ -27,20 +25,13 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from collections import Counter\n",
+-    "from ddi.data import load_brat_docs, make_sentence_level\n",
++    "# one-time vocab build\n",
+     "\n",
+-    "docs = load_brat_docs(\"Train\")\n",
+-    "counts = Counter()\n",
+-    "for doc in docs:\n",
+-    "    for sd in make_sentence_level(doc):\n",
+-    "        ents = {e.id: e for e in sd.entities}\n",
+-    "        for rel in sd.relations:\n",
+-    "            a1, a2 = ents[rel.arguments['Arg1']], ents[rel.arguments['Arg2']]\n",
+-    "            order = \"arg1_first\" if a1.locations.begin() < a2.locations.begin() else \"arg2_first\"\n",
+-    "            counts[(rel.type, order)] += 1\n",
+-    "for k, v in sorted(counts.items()):\n",
+-    "    print(k, v)"
++    "train, dev, val = build_human()\n",
++    "dev_id = write_dataset(dev, provenance=\"human:dev\", seed=42, notes=\"dev - iterate here\")\n",
++    "val_id = write_dataset(val, provenance=\"human:val\", seed=42, notes=\"val - finalists only\")\n",
++    "print(dev_id, val_id)\n",
++    "# 20260723-032552-e46d2b 20260723-032553-e79bce"
+    ]
+   },
+   {
+@@ -50,26 +41,8 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "import itertools\n",
+-    "from ddi.data import build_human, downsample_train_negatives\n",
+-    "from ddi.train import train_and_eval\n",
+-    "from ddi.experiment import log_run\n",
+-    "\n",
+-    "train, val = build_human()\n",
+-    "\n",
+-    "BASE = {\"model_name\": \"microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext\",\n",
+-    "        \"epochs\": 3, \"lr\": 2e-5, \"batch_size\": 32, \"max_length\": 256}\n",
+-    "\n",
+-    "for marker_init in [\"subword\", \"random\", \"mean\"]:\n",
+-    "    for neg_ratio in [2, 5, None]:\n",
+-    "        tr = downsample_train_negatives(train, neg_ratio, seed=42)\n",
+-    "        for seed in [0, 1, 2]:\n",
+-    "            cfg = {**BASE, \"marker_init\": marker_init, \"neg_ratio\": neg_ratio,\n",
+-    "                   \"seed\": seed, \"dataset\": \"human\"}\n",
+-    "            m = train_and_eval(cfg, tr, val)\n",
+-    "            log_run(cfg, m)\n",
+-    "            print(f\"{marker_init:8} neg={str(neg_ratio):4} seed={seed}  \"\n",
+-    "                  f\"f1={m['micro_f1_pos']:.3f}\")"
++    "dev_id = \"20260723-032552-e46d2b\"\n",
++    "val_id = \"20260723-032553-e79bce\""
+    ]
+   },
+   {
+@@ -79,10 +52,18 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.experiment import load_runs\n",
+-    "df = load_runs()\n",
+-    "df[\"cfg.neg_ratio\"] = df[\"cfg.neg_ratio\"].fillna(\"None\")\n",
+-    "df.groupby([\"cfg.marker_init\",\"cfg.neg_ratio\"])[[\"m.micro_f1_pos\",\"m.micro_p_pos\",\"m.micro_r_pos\"]].agg([\"mean\",\"std\"])"
++    "# trainer config, same as the one used for the human data runs, bar the dataset name\n",
++    "cfg = {\n",
++    "    \"model_name\": \"microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext\",\n",
++    "    \"epochs\": 3, \"lr\": 2e-5, \"batch_size\": 32, \"max_length\": 256,\n",
++    "    \"neg_ratio\": None, \"seed\": 0, \"dataset\": \"synthetic\",\n",
++    "}\n",
++    "\n",
++    "SYNTH_VERSION = \"v6\"\n",
++    "\n",
++    "GEN_CFG  = {\"model\": \"gpt-oss-120b\", \"temperature\": 0.7,\n",
++    "            \"reasoning_effort\": \"low\", \"max_output_tokens\": 3000}\n",
++    "SPEC_CFG = {\"n\": 2000, \"seed\": 0}          # add n_drugs_dist / label_dist later when sweeping\n"
+    ]
+   },
+   {
+@@ -92,13 +73,26 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.data import build_human\n",
+-    "train, val = build_human()\n",
+-    "print(train[1])\n",
++    "client = OpenAI(base_url=\"http://api.llm.apps.os.dcs.gla.ac.uk/v1\",\n",
++    "                api_key=os.environ[\"IDA_LLM_API_KEY\"], max_retries=5, timeout=120.0)\n",
++    "\n",
++    "vocab     = build_vocab()\n",
++    "specs     = make_specs(vocab=vocab, **SPEC_CFG)\n",
++    "sample_fn = make_sample_fn(client, **GEN_CFG)\n",
+     "\n",
+-    "from collections import Counter\n",
+-    "per_sent = Counter(r[\"sent_id\"] for r in train)\n",
+-    "print(per_sent.most_common(1))"
++    "generate_raw(specs, sample_fn, gen_id=SYNTH_VERSION, max_workers=16)\n",
++    "synth_id, stats = build_dataset_from_raw(\n",
++    "    SYNTH_VERSION,\n",
++    "    generator={**GEN_CFG, \"specs\": SPEC_CFG, \"prompt_sha\": prompt_fingerprint()},\n",
++    "    vocab_source=vocab.fingerprint(), seed=SPEC_CFG[\"seed\"])\n",
++    "print(stats)\n",
++    "\n",
++    "# inspect before training\n",
++    "from ddi.manifest import load_dataset\n",
++    "inst, man = load_dataset(synth_id)\n",
++    "\n",
++    "for r in inst[:10]:\n",
++    "    print(f\"{r['label']:10s} {r['source']:10s} {r['text']}\")\n"
+    ]
+   },
+   {
+@@ -108,9 +102,8 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.manifest import write_dataset\n",
+-    "val_id = write_dataset(val, provenance=\"human:val\", seed=42, notes=\"frozen eval set\")\n",
+-    "print(val_id)  "
++    "none_ratio = man[\"label_distribution\"][\"NONE\"] / sum(man[\"label_distribution\"].values())\n",
++    "print(f\"NONE ratio: {none_ratio:.3f} ({man['label_distribution']})\")"
+    ]
+   },
+   {
+@@ -120,41 +113,10 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.data import build_human, downsample_train_negatives\n",
+-    "from ddi.train import train_and_eval\n",
+-    "from ddi.experiment import log_run\n",
+-    "from ddi.manifest import write_dataset\n",
+-    "\n",
+-    "train, dev, val = build_human()                      # new 70/15/15 split\n",
+-    "\n",
+-    "# pin the eval sets: stable, hashed identity the leakage gate will check against\n",
+-    "dev_id = write_dataset(dev, provenance=\"human:dev\", seed=42, notes=\"dev - iterate here\")\n",
+-    "val_id = write_dataset(val, provenance=\"human:val\", seed=42, notes=\"val - touch rarely\")\n",
+     "\n",
+-    "BASE = {\"model_name\": \"microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext\",\n",
+-    "        \"epochs\": 3, \"lr\": 2e-5, \"batch_size\": 32, \"max_length\": 256}\n",
+-    "\n",
+-    "tr = downsample_train_negatives(train, None, seed=42)   # None = keep all negatives (the winner)\n",
+-    "for seed in [0, 1, 2]:\n",
+-    "    cfg = {**BASE, \"neg_ratio\": None, \"seed\": seed,\n",
+-    "           \"dataset\": \"human\", \"eval_id\": val_id}       # eval_id links the run to the pinned val set\n",
+-    "    m = train_and_eval(cfg, tr, val)\n",
+-    "    log_run(cfg, m, notes=\"human baseline, 70/15/15 split, winning config\")\n",
+-    "    print(f\"seed={seed}  f1={m['micro_f1_pos']:.3f}\")"
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "7",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "from ddi.experiment import load_runs\n",
+-    "df = load_runs()\n",
+-    "df[\"cfg.neg_ratio\"] = df[\"cfg.neg_ratio\"].fillna(\"None\")\n",
+-    "# only 3 seeds this time, so we can see the mean/std/count of the metrics, no need to group by marker init or neg ratio\n",
+-    "df.groupby([\"cfg.dataset\"])[[\"m.micro_f1_pos\",\"m.micro_p_pos\",\"m.micro_r_pos\"]].agg([\"mean\",\"std\",\"count\"])"
++    "# --- train (once the 50 look right, regenerate at ~2000 first) --------------\n",
++    "run_id, metrics = run_training(synth_id, dev_id, cfg, notes=\"synthetic-only v1\")\n",
++    "print(metrics[\"micro_f1_pos\"])"
+    ]
+   }
+  ],

@@ -1,0 +1,40 @@
+{
+  "dataset_id": "20260723-040505-d0aa96",
+  "created_at": "2026-07-23T04:05:05",
+  "provenance": "synthetic",
+  "generator": {
+    "model": "gpt-oss-20b",
+    "prompt_version": "v1",
+    "temperature": 1.0,
+    "reasoning_effort": "low",
+    "gen_id": "v2"
+  },
+  "vocab_source": {
+    "name": "vocab.json",
+    "sha256": "61e32b2235db44e0d6c5b02309d1c62a122cd6f052fa2cc1ac0d9b946bdb399b",
+    "n_simple": 151607,
+    "n_systematic": 36455,
+    "n_groups": 91,
+    "group_prob": 0.25,
+    "systematic_prob": 0.05
+  },
+  "negative_strategy": null,
+  "seed": 0,
+  "size": {
+    "n_instances": 102,
+    "n_sentences": 14
+  },
+  "label_distribution": {
+    "ADVISE": 3,
+    "NONE": 88,
+    "MECHANISM": 3,
+    "INT": 3,
+    "EFFECT": 5
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "ca9e82d5c0d6305ba78c4206200e5ddf80554642dad9dc0d1bc0ee8dfe7c6221",
+  "leakage_report": null,
+  "git_sha": "d777e52dec01f03c76cb5244ff64c24fe780159b",
+  "git_dirty": true,
+  "notes": ""
+}
