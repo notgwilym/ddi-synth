@@ -11,7 +11,7 @@ def _git(*args, default=""):
     except Exception:
         return default
 
-def log_run(config, metrics, notes=""):
+def log_run(config, metrics, notes="", train_id=None, eval_id=None):
     RUNS.mkdir(exist_ok=True)
     diff = _git("diff", "HEAD")
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -19,6 +19,8 @@ def log_run(config, metrics, notes=""):
     record = {
         "run_id": run_id,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "train_id": train_id,   # dataset_id of training data (None = reproducible human from code+seed)
+        "eval_id": eval_id,     # dataset_id of the eval set the metrics were computed on
         "config": config,
         "metrics": metrics,
         "notes": notes,
@@ -41,8 +43,15 @@ def load_runs():
     rows = []
     for p in sorted(RUNS.glob("*.json")):
         r = json.loads(p.read_text())
-        flat = {"run_id": r["run_id"], "git_sha": r["git_sha"][:8], "git_dirty": r["git_dirty"]}
-        flat.update({f"cfg.{k}": v for k, v in r["config"].items()})
+        cfg = dict(r["config"])
+        flat = {
+            "run_id": r["run_id"],
+            "train_id": r.get("train_id") or cfg.pop("train_id", None),
+            "eval_id": r.get("eval_id") or cfg.pop("eval_id", None),
+            "git_sha": r["git_sha"][:8],
+            "git_dirty": r["git_dirty"],
+        }
+        flat.update({f"cfg.{k}": v for k, v in cfg.items()})
         flat.update({f"m.{k}": v for k, v in r["metrics"].items()})
         rows.append(flat)
     return pd.DataFrame(rows)
