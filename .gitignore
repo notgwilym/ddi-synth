@@ -4,6 +4,8 @@ DDICorpusBrat/
 *.parquet
 datasets/instances/
 
+datasets/other/
+
 # caches / checkpoints
 __pycache__/
 .ipynb_checkpoints/
