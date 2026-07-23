@@ -1,0 +1,64 @@
+diff --git a/ddi/manifest.py b/ddi/manifest.py
+index 09978ee..3072103 100644
+--- a/ddi/manifest.py
++++ b/ddi/manifest.py
+@@ -5,8 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
+ 
+ # manifests are small -> committed to the repo (like runs/)
+ MANIFESTS = ROOT / "datasets" / "manifests"
+-# instances are large & (for synthetic) non-recreatable -> live on NFS, gitignored.
+-# Set DDI_DATA_ROOT=/root/nfs/ddi_datasets on the pod; falls back to a local dir for testing.
++# instances are large & (for synthetic) non-recreatable -> live on NFS, gitignored
+ DATA_ROOT = Path(os.environ.get("DDI_DATA_ROOT", ROOT / "datasets" / "instances"))
+ 
+ 
+@@ -94,7 +93,7 @@ def write_dataset(instances, provenance, *, generator=None, vocab_source=None,
+ def load_dataset(dataset_id, verify=True):
+     """Load instances + manifest for a dataset_id. Verifies the file hasn't changed."""
+     manifest = json.loads((MANIFESTS / f"{dataset_id}.json").read_text())
+-    path = DATA_ROOT / f"{dataset_id}.jsonl"        # reconstruct from *current* DATA_ROOT
++    path = DATA_ROOT / f"{dataset_id}.jsonl"        # reconstruct from current DATA_ROOT
+     if verify:
+         actual = _sha256(path)
+         if actual != manifest["sha256"]:
+diff --git a/test.ipynb b/test.ipynb
+index 897b5fb..3a9b258 100644
+--- a/test.ipynb
++++ b/test.ipynb
+@@ -112,6 +112,36 @@
+     "val_id = write_dataset(val, provenance=\"human:val\", seed=42, notes=\"frozen eval set\")\n",
+     "print(val_id)  "
+    ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "6",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "from ddi.data import build_human, downsample_train_negatives\n",
++    "from ddi.train import train_and_eval\n",
++    "from ddi.experiment import log_run\n",
++    "from ddi.manifest import write_dataset\n",
++    "\n",
++    "train, dev, val = build_human()                      # new 70/15/15 split\n",
++    "\n",
++    "# pin the eval sets: stable, hashed identity the leakage gate will check against\n",
++    "dev_id = write_dataset(dev, provenance=\"human:dev\", seed=42, notes=\"dev - iterate here\")\n",
++    "val_id = write_dataset(val, provenance=\"human:val\", seed=42, notes=\"val - touch rarely\")\n",
++    "\n",
++    "BASE = {\"model_name\": \"microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext\",\n",
++    "        \"epochs\": 3, \"lr\": 2e-5, \"batch_size\": 32, \"max_length\": 256}\n",
++    "\n",
++    "tr = downsample_train_negatives(train, None, seed=42)   # None = keep all negatives (the winner)\n",
++    "for seed in [0, 1, 2]:\n",
++    "    cfg = {**BASE, \"neg_ratio\": None, \"seed\": seed,\n",
++    "           \"dataset\": \"human\", \"eval_id\": val_id}       # eval_id links the run to the pinned val set\n",
++    "    m = train_and_eval(cfg, tr, val)\n",
++    "    log_run(cfg, m, notes=\"human baseline, 70/15/15 split, winning config\")\n",
++    "    print(f\"seed={seed}  f1={m['micro_f1_pos']:.3f}\")"
++   ]
+   }
+  ],
+  "metadata": {

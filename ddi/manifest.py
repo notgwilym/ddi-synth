@@ -5,8 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # manifests are small -> committed to the repo (like runs/)
 MANIFESTS = ROOT / "datasets" / "manifests"
-# instances are large & (for synthetic) non-recreatable -> live on NFS, gitignored.
-# Set DDI_DATA_ROOT=/root/nfs/ddi_datasets on the pod; falls back to a local dir for testing.
+# instances are large & (for synthetic) non-recreatable -> live on NFS, gitignored
 DATA_ROOT = Path(os.environ.get("DDI_DATA_ROOT", ROOT / "datasets" / "instances"))
 
 
@@ -94,7 +93,7 @@ def write_dataset(instances, provenance, *, generator=None, vocab_source=None,
 def load_dataset(dataset_id, verify=True):
     """Load instances + manifest for a dataset_id. Verifies the file hasn't changed."""
     manifest = json.loads((MANIFESTS / f"{dataset_id}.json").read_text())
-    path = DATA_ROOT / f"{dataset_id}.jsonl"        # reconstruct from *current* DATA_ROOT
+    path = DATA_ROOT / f"{dataset_id}.jsonl"        # reconstruct from current DATA_ROOT
     if verify:
         actual = _sha256(path)
         if actual != manifest["sha256"]:
