@@ -201,21 +201,12 @@ class Vocab:
 
 
 def build_vocab(vocab_path="datasets/other/vocab.json", **kw):
-    """Load the FROZEN vocabulary built once by scripts/build_vocab.py.
-
-    Filtering happens once, offline. This keeps generation fast and -- more
-    importantly -- makes the vocabulary a fixed artefact, so a dataset made in
-    week 2 can still be reproduced after the filter code changes in week 4.
-    """
     v = json.loads(Path(vocab_path).read_text())
     return Vocab(v["simple"], v["systematic"], v.get("groups") or DRUG_GROUPS,
                  name=Path(vocab_path).name, **kw)
 
 
 def context_terms(vocab_path="datasets/other/vocab.json", limit=None):
-    """Genes/diseases: NOT entities (guidelines S3.5.4 excludes enzymes), but real
-    DDI prose mentions them constantly. Usable as flavour the model may mention
-    but must not annotate."""
     v = json.loads(Path(vocab_path).read_text())
     out = v.get("context", [])
     return out[:limit] if limit else out
