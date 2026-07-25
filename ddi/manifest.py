@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # manifests are small -> committed to the repo (like runs/)
 MANIFESTS = ROOT / "datasets" / "manifests"
 # instances are large & (for synthetic) non-recreatable -> live on NFS, gitignored
-DATA_ROOT = Path(os.environ.get("DDI_DATA_ROOT", ROOT / "datasets" / "instances"))
+DATA_ROOT = ROOT / "datasets" / "instances"
 
 
 def _git(*args, default=""):

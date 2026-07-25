@@ -150,6 +150,54 @@ def make_sample_fn(client, model="gpt-oss-120b", temperature=0.7,
 
     return sample_fn
 
+VERIFIER_SYSTEM = """ You are an expert biomedical annotator applying the DDI-2013
+annotation guidelines. You will be shown one sentence containing two drug entities marked
+[E1]...[/E1] and [E2]...[/E2]. Classify the relationship asserted between the
+[E1] drug and the [E2] drug, considering only what the sentence states.
+
+RELATION DEFINITIONS (from DDI-2013 guidelines):
+- MECHANISM: a pharmacokinetic interaction is stated (absorption, metabolism,
+  clearance, plasma-concentration change).
+- EFFECT: a pharmacodynamic effect or an unspecified clinical effect is stated.
+- ADVISE: a recommendation about co-administration is given.
+- INT: an interaction is stated with no detail of type or effect.
+- NONE: the sentence asserts no interaction between these two specific drugs,
+  even if they interact with other drugs present, or interact in reality but
+  not in this sentence.
+
+Return JSON: {label, justification}  — justification one clause, citing the span
+of text that determines the label.
+"""
+
+def make_verifier(client, model="gpt-oss-120b", temperature=0,
+                   reasoning_effort=None, max_output_tokens=3000):
+    from pydantic import BaseModel
+    from typing import Literal
+
+    class Verdict(BaseModel):
+        label: Literal["NONE","ADVISE","EFFECT","INT","MECHANISM"]
+        justification: str   # one clause, cite the span that decides it
+        
+    def sample_fn(spec):
+        kwargs = {}
+        if reasoning_effort:
+            kwargs["reasoning"] = {"effort": reasoning_effort}
+        resp = client.responses.parse(
+            model=model,
+            input=[{"role": "system", "content": VERIFIER_SYSTEM},
+                   {"role": "user", "content": spec["text"]}],
+            text_format=Verdict,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,   # hard stop on repetition loops
+            **kwargs,
+        )
+        parsed = resp.output_parsed
+        if parsed is None:                      # refusal, truncation, or parse failure
+            raise ValueError(f"no parsed output (status={getattr(resp, 'status', '?')})")
+        return parsed.model_dump()
+
+    return sample_fn
+
 def prompt_fingerprint():
     import hashlib
     blob = SYSTEM + "".join(f"{k}{v}" for k, v in sorted(REGISTER_HINT.items()))
