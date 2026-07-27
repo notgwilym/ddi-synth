@@ -105,20 +105,65 @@ fabricate negatives. That is the hard, novel part.
 
 ## Approach
 
-### Generating structurally correct data
+### Generating structurally correct data (current: clinical-vignette generation)
 
-Prompt the LLM with N drugs and one specified interacting pair, then enumerate all
-pairs programmatically. Pairs not listed in the relations fall through to NONE. This
-gives in-distribution negatives for free and forces the classifier to attend to the
-entity markers rather than sentence topic.
+SUPERSEDED the original single-sentence flat-enumeration design (kept below as history).
+The single-sentence approach produced template collapse ("A decreases the plasma
+concentration of B" repeated) and, worse, STATED negatives ("whereas X and Y showed no
+observable interaction") appended to every passage. Real DDI negatives are silent
+co-mentions; the stated form is off-distribution and taught the classifier a spurious
+cue. This was the main driver of the early precision/recall pathology.
 
-The negative ratio falls out of the drug count. With one positive relation and N drugs
-there are C(N,2) pairs, so N=3 gives 67% NONE, N=4 gives 83%, N=5 gives 90%. Current
-distribution {3: 0.25, 4: 0.45, 5: 0.2} lands around 85%, matching the real corpus
-without any downsampling.
+Current design: multi-sentence clinical vignettes. The model is given a patient/document
+framing, a drug pool, and target interaction TYPES (not named pairs), and writes a 2-4
+sentence passage as a list of sentences, each with its own relations. Key properties:
+- Non-interacting drugs get distinct clinical roles (comparator, background therapy,
+  prior medication) woven into the narrative, not dumped in a trailing list. This
+  produces natural, unstated, in-distribution negatives.
+- Relations are declared PER SENTENCE (the model says which sentence each interaction is
+  in), so no cross-sentence inference and no mention-id juggling.
+- The model chooses which pool drugs realise each target type, so it picks plausible
+  pairs instead of being forced to assert a false interaction.
+- Realism of the interaction itself is explicitly NOT required (told not to deliberate);
+  this keeps generation fast and, usefully, keeps novelty up (see leakage note). Known
+  side effect: some generated mechanisms are chemically absurd (a monoclonal antibody
+  "inhibiting hepatic metabolism"). Linguistically correct, chemically nonsense. Open
+  design tension to raise with Jake, not yet resolved.
 
-Labels are an input, not an output. The generator is told which class to write. This
-gives direct control over class balance, which matters for INT.
+### Sentence-scoped parser (current)
+
+`sample_to_instances` splits the passage into the model's declared sentences, resolves
+entity spans within each, and enumerates pairs per sentence via the shared
+`make_pair_instances`. Cross-sentence pairs are dropped by the same rule as the human
+pipeline. Deliberate divergences from the human path, all synthetic-only:
+- ONE INSTANCE PER NAME-PAIR per sentence (collapse repeated mentions to first
+  occurrence). Human pipeline is mention-level (gold gives exact ids); synthetic
+  relations are name-level, so name-keyed labelling + collapse avoids the
+  self-pair junk and the same-pair-two-labels contradiction that mention-level
+  enumeration produced on repeated-drug sentences.
+- Self-name pairs (drug vs another mention of itself) are dropped.
+- Relations whose two drugs land in different sentences are reject-and-logged, not
+  silently dropped.
+- Synthetic path does NOT use spaCy (model declares its own sentence boundaries);
+  human path still uses spaCy. Deliberate.
+
+Reject rate on the current pipeline is ~2% (v11). Residual rejects are model-side:
+entity-string infidelity (singular/plural drift, spacing corruption), cross-sentence
+mis-scoping, and substring collisions in `.find`-based span resolution. Acceptable;
+tightening to <1% is v2.
+
+### Class balance
+
+The negative ratio falls out of the drug count and the vignette structure. IMPORTANT
+FINDING (see Results): the vignette generator STRUCTURALLY under-produces NONE, because
+each non-interacting drug tends to get its own sentence (one drug per sentence = zero
+pairs = zero NONE). A dedicated co-mention negative generator (`CONEG`, empty relations,
+several drugs per sentence) exists to top up NONE. But the mixing curve showed NONE
+ratio is NOT the bottleneck, so this is now mainly a knob for matching dev, not a fix.
+
+Labels are an input, not an output. The generator is told which class to write, giving
+direct control over class balance. Positive-class composition can be matched to dev via
+`label_dist` (tested: didn't move F1, see Results).
 
 ### Pipeline shape
 
@@ -165,30 +210,60 @@ Note: the earlier 0.855 figure was on the old 80/20 split and included the marke
 axis, which has since been removed from the code (random won, difference was small).
 Not comparable, do not cite it.
 
-### First synthetic-only run (v6, 2000 specs, gpt-oss-120b)
+### Old v6 run (single-sentence pipeline) - HISTORY
 
-micro-F1 0.3158, P 0.5431, R 0.2226. Train size 13968 instances.
+v6 (single-sentence, stated-negatives, terms.json vocab): micro-F1 0.3158, P 0.54,
+R 0.22. Precision-high/recall-low. Hypothesis at the time was formulaic negation, and
+the vignette rebuild fixed the stated-negatives problem. But note the newer runs invert
+the shape (recall-high, precision-low), so the story moved - see below. Keeping v6 only
+as the pre-rebuild reference point.
 
-Per class: ADVISE 0.421, INT 0.414, EFFECT 0.287, MECHANISM 0.264.
-Per register: DrugBank 0.316, MedLine 0.308.
+### Current synthetic-only runs (vignette pipeline, real vocab)
 
-That is 39% of the human baseline, untuned, first attempt.
+v11 (uniform positive mix): micro-F1 0.247, P 0.15, R 0.62. Recall fine, precision is
+the floor - the classifier over-fires on interactions. This is the shape that all
+subsequent runs share.
 
-The interesting part is the shape. Precision 0.54 against recall 0.22 is the opposite
-of the human baseline. The model is reasonably right when it fires but barely fires.
-That points at the negatives rather than the positives.
+Three controlled experiments to localise the gap:
 
-Leading hypothesis: formulaic negation. Almost every generated sentence appends
-something like "whereas X and Y showed no observable interaction". Real DDI negatives
-are usually just drugs co-occurring in a list with no comment at all. The classifier
-may have learned that explicit disclaimer language means NONE, and defaults to NONE
-when that cue is absent on real text. Fix is in the prompt: stop the model appending a
-non-interaction clause.
+1. MIXING CURVE (NONE ratio 0.30 -> 0.85, positives fixed): F1 flat 0.254 -> 0.277,
+   precision flat ~0.16-0.19. => Class balance is NOT the bottleneck. The 13%-vs-87%
+   NONE inversion hypothesis is FALSE. (Vignette generator under-produces NONE; topped
+   up with the CONEG generator, but it doesn't help F1.)
 
-INT scoring second best on 19 support is encouraging for the class-control argument.
+2. POSITIVE-COMPOSITION MATCH (v13, dev proportions MECH .37/EFFECT .37/ADVISE .22/
+   INT .03, vs the earlier uniform 1:1:1:1): micro-F1 0.286, essentially unchanged.
+   => Positive-class distribution is NOT the bottleneck. INT F1 did ~double
+   (0.077 -> 0.144) from de-dilution, but n=19 in dev so it barely moves micro.
 
-Registers scoring almost identically suggests synthetic transfers evenly rather than
-favouring the DrugBank style it superficially imitates.
+3. SIZE-MATCHED HUMAN CONTROL (decisive). Human train subsampled to synthetic scale at
+   0.85 NONE, same eval:
+
+   | config | n | F1 | P | R |
+   |---|---|---|---|---|
+   | synthetic v13 @0.85 | ~19k | 0.286 | 0.186 | 0.613 |
+   | human pos=300 @0.85 | 2000 | 0.460 | 0.416 | 0.514 |
+   | human pos=800 @0.85 | 5333 | 0.653 | 0.568 | 0.769 |
+   | human pos=1500 @0.85 | 10000 | 0.740 | 0.667 | 0.830 |
+   | human pos=2573 @0.85 | 17153 | 0.789 | 0.735 | 0.852 |
+   | human FULL (natural) | 26785 | 0.808 | 0.761 | 0.860 |
+
+CONCLUSION. At matched size and NONE ratio, human 0.789 vs synthetic 0.286 - the ~0.50
+gap is entirely SOURCE QUALITY, not quantity or distribution. Human reaches 0.46 with
+just 300 real positives; synthetic has ~2933 positives and scores 0.29. Precision is
+the failure mode everywhere: human precision climbs 0.42 -> 0.74 across the sweep,
+synthetic is stuck ~0.19 regardless of anything tried. Synthetic examples are
+individually far less informative than real ones. The problem is distribution OVERLAP
+(synthetic positives/negatives don't teach a boundary that holds on real text), not
+distribution proportion.
+
+Key figure for the writeup: F1 vs positive count (human learning curve) with the
+synthetic point sitting far below the curve. Makes the quality gap visual.
+
+Per-class pattern (consistent across runs): recall fine (0.42-0.65), precision the
+floor (0.09-0.29). EFFECT strongest (~0.40), MECHANISM weakest of the real three
+(~0.22), INT worst and structurally so (defined by absence of detail, hard to generate,
+n=19 noisy). Register split: DrugBank transfers ~2x better than MedLine (0.26 vs 0.13).
 
 ---
 
@@ -202,9 +277,15 @@ favouring the DrugBank style it superficially imitates.
   Pydantic `text_format`.
 - Models: gpt-oss-120b for real runs, gpt-oss-20b for pipeline debugging when 120b is
   asleep and slow to start.
-- `max_output_tokens` must be generous, around 3000. Reasoning tokens count against
-  that budget, so a tight cap truncates the JSON and returns status=incomplete. Set it
-  to 600 at one point and 70% of the batch failed.
+- `max_output_tokens` must be generous - currently 4000. Reasoning tokens count against
+  that budget, so a tight cap truncates the JSON and returns status=incomplete. Learned
+  twice: 600 -> 70% failed; and 3000 at reasoning=high on large multi-word-name pools
+  -> incomplete truncations. Generation uses reasoning=low (it's a writing task); the
+  VERIFIER uses reasoning=high (a judgement task - see Open questions).
+- The Responses API route (`responses.parse`) is WORKER-SPECIFIC. Some workers 404 on
+  it (llama-3-8b did) while gpt-oss-120b serves it. Ping `responses.parse` on the exact
+  model before a big run. gpt-oss endpoint is a single shared H100, cold-starts on idle,
+  and can be unschedulable under contention ("resource not available").
 - Batch API: not worth pursuing. vLLM's batch support is mainly offline via `run_batch`
   over a JSONL file, which needs server-side access we do not have. The OpenAI Batch
   API exists for cost discounts and rate limits, neither of which apply on a
@@ -218,25 +299,32 @@ favouring the DrugBank style it superficially imitates.
 
 ## Vocabulary
 
-`terms.json` is a chemistry synonym dump, about 262k chemical terms plus genes and
-diseases. After regex filtering (identifiers, InChIKeys, UNII codes, ATC codes, CAS
-numbers, molecular formulae, dyes, reference standards, mojibake, consumer products)
-roughly 200k remain, but most are still industrial chemicals, solvents and dyes rather
-than drugs. No regex separates "Dinonyl adipate" from "Clioquinol Impurity 6".
+CURRENT: DrugBank + WHO-ATC (`datasets/other/DrugBank.csv`, `WHO-ATC-DDD.csv`).
+Replaced the old `terms.json` chemical-synonym dump (reagents, file paths, industrial
+chemicals) which was badly off-distribution from DDI-2013's real drug entities.
 
-Kept as-is for now, deliberately. The classifier only sees the marked span, and varied
-unpredictable entity strings arguably prevent lexical shortcutting. An LLM filter pass
-exists in `scripts/filter_vocab_llm.py` if a cleaner lexicon is wanted. "Clean lexicon
-vs raw chemical pool" is a cheap one-line ablation.
+Three-tier build in `build_vocab`:
+- Drugs: DrugBank common names (cap-at-one canonical name per drug) + ATC 7-char substance leaves.
+- Groups: ATC 4-5 char subgroup names (quinolones, beta blocking agents, etc.). This
+  closed a real gap - DDI-2013 annotates group entities heavily and the old vocab had
+  almost none. ~0.3 group sampling (approximate prior from guidelines, NOT measured
+  from corpus data, to keep the from-scratch claim clean).
+- Anatomical top-level ATC codes (1-3 char) dropped.
 
-Drug class terms (NSAIDs, corticosteroids, MAO inhibitors etc.) are a hand-written list
-in `vocab.py`, since terms.json is thin on them and they are a large slice of real DDI
-entities. This is a hand-curated artefact, which weakens the portability claim
-slightly. Worth a sentence in the writeup. Bootstrapping the list from the task
-description via the LLM is straightforward future work.
+Filtering: base filter (codes, formulae, >6 words, 2+ digits) + admin-token stoplist
+(combinations, other, products, substances, reagents, equipment...) + non-drug stoplist
+(crab, pollen, vaccine, spp...). Group word-cap of 3 trades away some legit long class
+names for cleanliness. Final: ~14.9k drugs, ~425 groups, all reading as real
+drugs/classes. Provenance (sources + p_group + hash) recorded in the vocab fingerprint.
 
-Genes and diseases are not DDI entities and are not used as entities. They are
-available as context terms the model may mention but must not annotate.
+Residual noise (few, low priority v2): endogenous compounds and foods leak through
+(Avocado, N-Acetylglucosamine); a DrugBank type/category filter would remove the class.
+
+NOTE for leakage: real drug names raise n-gram overlap with the real corpus vs the old
+junk vocab. That is expected vocabulary overlap, not memorised phrasing (read the N=8
+tail, not N=1). Re-run the leakage gate on the real-vocab data before any external
+result. Leakage gate was deleted at one point as "pointless on junk vocab" - it is NOT
+pointless on real vocab, re-add before showing a number externally.
 
 ---
 
@@ -274,42 +362,68 @@ Prompt lessons:
 
 ## Open questions
 
-Label fidelity is the biggest unknown. Because the label is an input, the model is
-anchored: told to write EFFECT, it will label its output EFFECT more or less
-regardless of what it actually wrote. Agreement between requested and emitted label
-measures compliance, not correctness, so it is nearly useless as a quality signal.
-Seen at least once where a sentence used clear mechanism language ("altered the plasma
-concentration of") while carrying an INT label.
+Label fidelity is now the LEADING candidate for the quality gap. Because the label is
+an input, the generator is anchored - told to write EFFECT it labels its output EFFECT
+regardless. So requested-vs-emitted agreement measures compliance, not correctness.
 
-Fix: blind relabelling. Take generated sentences with markers inserted, and in a fresh
-call with no mention of what was requested, ask the model to classify the pair.
-Agreement between requested and blind label is a real fidelity number. A few hundred
-per config is enough. Plus a manual spot check of about 50 against the guidelines,
-which is the only ground truth available and calibrates whether the blind relabeller
-can be trusted.
+The verifier (blind relabeller) is BUILT and CALIBRATED. Fresh call, no sight of the
+requested label, given the marked sentence + the 4.5.x guideline definitions, returns a
+label. Key results:
+- At reasoning_effort=low it massively over-called interactions (NONE recall 0.45-0.48)
+  - it reads interactions into everything. Adding rules/definitions did NOT fix this.
+- At reasoning_effort=HIGH: NONE recall 0.81, overall accuracy 0.82 on human dev vs
+  gold. The reasoning step (does this sentence actually ASSERT an interaction between
+  THESE two) is what it was missing at low. Reasoning effort was the lever, not the
+  prompt.
+- Self-calibration: hand-labelled 30 dev instances blind vs gold, 27-28/30. Misses only
+  on genuinely ambiguous boundaries (MECH/EFFECT, INT/NONE), no directional bias. So
+  manual adjudication of the verifier's disagreements is trustworthy. (Also: the task is
+  a LINGUISTIC judgement not a pharmacological one - no biomed expertise needed, the
+  guidelines resolve it. Confirmed on the hard cases.)
+- Verifier is weak on INT (recall 0.58-0.63), structurally - INT is defined by ABSENCE
+  of detail, and a careful reasoner tends to find detail.
 
-If fidelity turns out to be, say, 70%, that is not a failure. It explains the gap to
-the human baseline and makes the final number interpretable.
+THE verifier experiment (next session): does verifier-pruning improve downstream F1?
+Verify v13 positives at reasoning=high, keep agreements, retrain, compare to the 0.286
+unpruned baseline. Three-arm to be rigorous: pruned / unpruned / random-equal-size. The
+bar is downstream F1 vs random-equal-size (controls for "less data"), NOT annotator
+quality metrics. Pre-commit to the reading: if pruned ~= raw, the positives were already
+faithful and the gap is TEXT realism (templating), not label fidelity - which points at
+de-templating the positives instead.
 
 ---
 
 ## Next steps
 
 - [x] Problem understood, prior art scoped, supervisor aligned
-- [x] Infrastructure: pod persistence, caches, BiomedBERT cached
-- [x] Harness running
-- [x] Human baseline on the 70/15/15 split
-- [x] Synthetic generation pipeline, structured, from scratch
-- [x] First synthetic-only run
-- [ ] Fix formulaic negation in the prompt, rerun, see if recall moves
-- [ ] Blind relabel validator plus manual spot check
-- [ ] Leakage gate (exact-match n-gram overlap against dev/val/test, written back into
-      the manifest, which already has a `leakage_report` field reserved)
-- [ ] Negative strategy ablation
-- [ ] Scale curve: 1k, 5k, 20k, 100k. Where does it saturate?
-- [ ] Mixing curve: human {0, 10, 25, 50, 100%} against synthetic. Target finding: N
-      synthetic examples is worth M human annotations.
-- [ ] Zero-shot vs few-shot generation
-- [ ] Vocab ablation: LLM-filtered lexicon vs raw chemical pool
-- [ ] Generator model ablation: 120b vs 20b, given the non-participant finding
-- [ ] Best config against the real DDI test set, once, around week 6
+- [x] Infrastructure, harness, human baseline (0.8127)
+- [x] Generation pipeline rebuilt: vignette generation, sentence-scoped parser,
+      one-instance-per-name-pair, real DrugBank+ATC vocab
+- [x] CONEG negative generator (natural co-mention NONE)
+- [x] Verifier built + calibrated (0.82 @ reasoning=high)
+- [x] Mixing curve -> class balance ruled out
+- [x] Positive-composition match -> positive distribution ruled out
+- [x] Size-matched human control -> gap is per-example QUALITY, not quantity/distribution
+
+NEXT (priority order):
+- [ ] VERIFIER-PRUNING EXPERIMENT (the main one). Three-arm: pruned / unpruned /
+      random-equal-size, bar = downstream F1 vs random-equal-size. Tests label-fidelity
+      hypothesis against the 0.286 baseline.
+- [ ] If pruning doesn't help: de-template the positives (prompt diversity). Positives
+      are formulaic ("Co-administration of X with Y resulted in..."); real DDI text is
+      varied. Templated positives -> classifier learns template not relation -> overfires.
+- [ ] Re-add the leakage gate (deleted; now needed on real vocab - see Vocabulary note).
+- [ ] ChemProt second-corpus replication (pre-empts the single-corpus reviewer objection;
+      now realistic given the pipeline is stable).
+- [ ] Best config against the real DDI TEST set, once, ~week 6. Test still sealed.
+
+RAISE WITH JAKE:
+- Paper viability + venue/deadline (BioNLP workshop at ACL likely) + authorship.
+- The chemically-absurd-mechanism tension (realism vs novelty/leakage).
+- Shared-H100 availability (was down ~40h once; a real constraint on a timeboxed project).
+
+DEPRIORITISED (were in the old plan, now lower value given the quality finding):
+- Scale curve - the human control shows quantity isn't the issue, so scaling synthetic
+  won't close the gap. Only worth it to show synthetic saturation, not as a fix.
+- Zero-shot vs few-shot, 120b-vs-20b generator ablation, vocab ablation - all secondary
+  to the quality/fidelity question now.
