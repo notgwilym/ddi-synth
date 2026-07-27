@@ -1,0 +1,29 @@
+{
+  "dataset_id": "20260727-113240-d9883b",
+  "created_at": "2026-07-27T11:32:40",
+  "provenance": "synthetic:v11+coneg-mix",
+  "generator": {
+    "note": "mixing curve, target NONE 0.5",
+    "prompt_sha": "903006b69dec"
+  },
+  "vocab_source": null,
+  "negative_strategy": null,
+  "seed": 0,
+  "size": {
+    "n_instances": 5866,
+    "n_sentences": 4801
+  },
+  "label_distribution": {
+    "ADVISE": 683,
+    "EFFECT": 749,
+    "NONE": 2933,
+    "INT": 759,
+    "MECHANISM": 742
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "966f27cd23d9a30248ded71e63150dfa0c09b36047928de0530748c3c07f83a8",
+  "leakage_report": null,
+  "git_sha": "7e0df504f0ea2b3eb5279417c5b504e70e05815e",
+  "git_dirty": true,
+  "notes": "mix target=0.5 actual=0.500"
+}

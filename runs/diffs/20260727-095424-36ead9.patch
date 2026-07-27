@@ -1,0 +1,16 @@
+diff --git a/test.ipynb b/test.ipynb
+index 05958f0..7c7dfac 100644
+--- a/test.ipynb
++++ b/test.ipynb
+@@ -87,9 +87,9 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.train import run_training\n",
++    "from ddi.run import run_training\n",
+     "\n",
+-    "# --- train (once the 50 look right, regenerate at ~2000 first) --------------\n",
++    "# train\n",
+     "run_id, metrics = run_training(synth_id, dev_id, cfg, notes=\"synthetic-only v2\")\n",
+     "print(metrics[\"micro_f1_pos\"])"
+    ]

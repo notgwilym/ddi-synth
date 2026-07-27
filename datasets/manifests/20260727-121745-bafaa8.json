@@ -1,0 +1,29 @@
+{
+  "dataset_id": "20260727-121745-bafaa8",
+  "created_at": "2026-07-27T12:17:45",
+  "provenance": "synthetic:v13-devcomp+coneg",
+  "generator": {
+    "note": "dev positive composition, NONE 0.85",
+    "prompt_sha": "903006b69dec"
+  },
+  "vocab_source": null,
+  "negative_strategy": null,
+  "seed": 0,
+  "size": {
+    "n_instances": 19051,
+    "n_sentences": 6207
+  },
+  "label_distribution": {
+    "NONE": 16191,
+    "EFFECT": 1092,
+    "MECHANISM": 1039,
+    "ADVISE": 628,
+    "INT": 101
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "59024b1bff0d74271538462ec882773810ea6489da807e48e2b2bc5107afba2e",
+  "leakage_report": null,
+  "git_sha": "7e0df504f0ea2b3eb5279417c5b504e70e05815e",
+  "git_dirty": true,
+  "notes": "v13 dev-composition positives + coneg NONE @0.85"
+}

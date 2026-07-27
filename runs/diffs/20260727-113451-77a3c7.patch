@@ -1,0 +1,337 @@
+diff --git a/ddi/prompt.py b/ddi/prompt.py
+index 22590b1..d8455e6 100644
+--- a/ddi/prompt.py
++++ b/ddi/prompt.py
+@@ -197,4 +197,53 @@ def make_verifier(client, model="gpt-oss-120b", temperature=0,
+             raise ValueError(f"no parsed output (status={getattr(resp, 'status', '?')})")
+         return parsed.model_dump()
+ 
++    return sample_fn
++
++CONEG_SYSTEM = """You are writing short clinical passages that list several medications a patient is taking concurrently, to serve as synthetic training data.
++
++You are given a document framing and a pool of drugs. Write a 1-3 sentence passage that mentions ALL of these drugs together as part of a shared medication regimen. Group several drugs per sentence.
++
++Example: "The patient's regimen included metformin, ramipril, and atorvastatin for diabetes, hypertension, and cardiovascular risk respectively, alongside amoxicillin for a concurrent infection."
++
++RULES
++- Every drug in the pool must appear in the text, grouped naturally with others.
++- You MUST list every drug you write, in the `entities` field, copying each name exactly as it appears in the text. The entities field must never be empty.
++- Describe the drugs only as co-administered. Do not describe any drug as affecting or interacting with another, and do not write "no interaction" or similar. Because no interactions are described, each sentence's `relations` field will be an empty list -- but `entities` must still contain every drug.
++
++Plain ASCII prose, no markdown."""
++
++
++def render_coneg(spec):
++    lines = [f"Write {spec['framing']}.", "",
++             "Mention all of these drugs together as concurrent, non-interacting medications:"]
++    lines += [f"  - {d}" for d in spec["drug_pool"]]
++    lines += ["", "Group several per sentence. Assert NO interactions between any of them."]
++    return "\n".join(lines)
++
++def make_coneg_specs(n, vocab, seed=1, pool_size=None, registers=None):
++    pool_size = pool_size or {4: 0.3, 5: 0.4, 6: 0.3}   # bigger pools -> more NONE pairs
++    registers = registers or {"DrugBank": 0.5, "MedLine": 0.5}
++    rng = random.Random(seed)
++    specs = []
++    for _ in range(n):
++        register = _pick(registers, rng)
++        k = _pick(pool_size, rng)
++        specs.append({"register": register,
++                      "framing": rng.choice(FRAMINGS[register]),
++                      "drug_pool": vocab.sample(k, rng)})
++    return specs
++
++def make_coneg_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
++                         reasoning_effort="low", max_output_tokens=4000):
++    def sample_fn(spec):
++        kw = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
++        resp = client.responses.parse(
++            model=model,
++            input=[{"role": "system", "content": CONEG_SYSTEM},
++                   {"role": "user", "content": render_coneg(spec)}],
++            text_format=Generated, temperature=temperature,
++            max_output_tokens=max_output_tokens, **kw)
++        if resp.output_parsed is None:
++            raise ValueError(f"no parsed output (status={getattr(resp,'status','?')})")
++        return resp.output_parsed.model_dump()
+     return sample_fn
+\ No newline at end of file
+diff --git a/test.ipynb b/test.ipynb
+index 05958f0..bd7855e 100644
+--- a/test.ipynb
++++ b/test.ipynb
+@@ -67,7 +67,17 @@
+     "client = OpenAI(base_url=\"http://api.llm.apps.os.dcs.gla.ac.uk/v1\",\n",
+     "                api_key=os.environ[\"IDA_LLM_API_KEY\"], max_retries=5, timeout=120.0)\n",
+     "\n",
+-    "vocab     = build_vocab()\n",
++    "\n",
++    "vocab     = build_vocab()\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "4",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "specs = make_vignette_specs(SPEC_CFG[\"n\"], vocab=vocab, seed=SPEC_CFG[\"seed\"])\n",
+     "sample_fn = make_sample_fn(client, **GEN_CFG)\n",
+@@ -83,13 +93,23 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "4",
++   "id": "5",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "from ddi.train import run_training\n",
++    "print(synth_id, dev_id, val_id)"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "6",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "from ddi.run import run_training\n",
+     "\n",
+-    "# --- train (once the 50 look right, regenerate at ~2000 first) --------------\n",
++    "# train\n",
+     "run_id, metrics = run_training(synth_id, dev_id, cfg, notes=\"synthetic-only v2\")\n",
+     "print(metrics[\"micro_f1_pos\"])"
+    ]
+@@ -97,48 +117,204 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "5",
++   "id": "7",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "import importlib, ddi.prompt, ddi.synth\n",
+-    "importlib.reload(ddi.prompt); importlib.reload(ddi.synth)\n",
+-    "from ddi.prompt import make_vignette_specs, make_sample_fn, render_vignette, prompt_fingerprint\n",
+-    "from ddi.synth import sample_to_instances, generate_raw, build_dataset_from_raw\n",
+-    "from ddi.vocab import build_vocab\n",
+-    "\n",
++    "from ddi.manifest import load_dataset\n",
++    "inst, man = load_dataset(synth_id)\n",
++    "d = man[\"label_distribution\"]\n",
++    "tot = sum(d.values())\n",
++    "print(f\"total instances: {tot}\")\n",
++    "print(f\"NONE ratio: {d['NONE']/tot:.3f}\")\n",
++    "print(d)"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "8",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "neg_specs = make_vignette_specs(\n",
++    "    600, vocab=vocab, seed=1,          # seed=1, different from v11's seed=0\n",
++    "    pool_size={5: 0.3, 6: 0.4, 7: 0.3},\n",
++    "    n_targets=(0, 1))                   # mostly-or-entirely NONE passages\n",
++    "generate_raw(neg_specs, sample_fn, gen_id=\"v12-neg\", max_workers=16)"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "9",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "neg_id, neg_stats = build_dataset_from_raw(\n",
++    "    \"v12-neg\",\n",
++    "    generator={**GEN_CFG, \"prompt_sha\": prompt_fingerprint(), \"note\": \"negative-heavy\"},\n",
++    "    vocab_source=vocab.fingerprint(), seed=1)\n",
++    "print(neg_stats)\n",
++    "neg_inst, neg_man = load_dataset(neg_id)\n",
++    "print(\"neg batch NONE ratio:\", neg_man[\"label_distribution\"])"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "10",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "combined = inst + neg_inst        # inst = v11 instances from earlier\n",
++    "from collections import Counter\n",
++    "c = Counter(r[\"label\"] for r in combined)\n",
++    "print(c, \"NONE ratio:\", c[\"NONE\"]/sum(c.values()))"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "11",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import importlib, ddi.prompt, ddi.synth, ddi.vocab\n",
++    "importlib.reload(ddi.prompt); importlib.reload(ddi.synth); importlib.reload(ddi.vocab)\n",
++    "from ddi.prompt import make_coneg_sample_fn, make_coneg_specs\n",
++    "from ddi.synth import generate_raw, build_dataset_from_raw\n",
++    "from ddi.manifest import load_dataset\n",
+     "import os\n",
+     "from openai import OpenAI\n",
+     "\n",
+     "client = OpenAI(base_url=\"http://api.llm.apps.os.dcs.gla.ac.uk/v1\",\n",
+     "                api_key=os.environ[\"IDA_LLM_API_KEY\"], max_retries=5, timeout=120.0)\n",
+     "\n",
+-    "GEN_CFG = {\"model\": \"gpt-oss-120b\", \"temperature\": 0.9, \"reasoning_effort\": \"low\"}\n",
+-    "sample_fn = make_sample_fn(client, **GEN_CFG)\n",
+     "\n",
+     "vocab     = build_vocab()\n",
+     "\n",
+-    "specs = make_vignette_specs(, vocab=vocab, seed=0)\n",
+-    "print(render_vignette(specs[0]), \"\\n\" + \"=\"*60)\n",
+-    "\n",
+-    "sample = sample_fn(specs[0])\n",
+-    "for s in sample[\"sentences\"]:\n",
+-    "    print(\"S:\", s[\"text\"])\n",
+-    "    for r in s[\"relations\"]:\n",
+-    "        print(\"   REL\", r[\"label\"], r[\"arg1\"], \"~\", r[\"arg2\"])\n",
+-    "print(\"entities:\", [e[\"text\"] for e in sample[\"entities\"]])\n",
+-    "print(\"=\"*60)\n",
+-    "for inst in sample_to_instances(sample, \"synth:smoke:0\"):\n",
+-    "    print(f\"{inst['label']:10s} {inst['sent_id']:18s} {inst['text']}\")"
++    "coneg_fn = make_coneg_sample_fn(client, max_output_tokens=4000)\n",
++    "specs = make_coneg_specs(20, vocab=vocab, seed=1)\n",
++    "generate_raw(specs, coneg_fn, gen_id=\"v12-coneg\", max_workers=8)\n",
++    "cid, cstats = build_dataset_from_raw(\"v12-coneg\",\n",
++    "    generator={\"note\":\"coneg\",\"prompt_sha\":prompt_fingerprint()},\n",
++    "    vocab_source=vocab.fingerprint(), seed=1)\n",
++    "ci, cm = load_dataset(cid)\n",
++    "print(\"per-passage NONE yield:\", len(ci)/20)\n",
++    "print(\"label dist:\", cm[\"label_distribution\"])   # want ~all NONE\n",
++    "for r in ci[:6]: print(\" \", r[\"label\"], r[\"text\"][:80])"
+    ]
+   },
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "6",
++   "id": "12",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import json\n",
++    "for line in open(\"/root/nfs/synth_data_creation/datasets/instances/raw/v12-coneg-smoke.rejects.jsonl\"):\n",
++    "    print(json.loads(line)[\"reason\"])"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "13",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import importlib, ddi.prompt, ddi.synth, ddi.vocab\n",
++    "importlib.reload(ddi.vocab); importlib.reload(ddi.prompt); importlib.reload(ddi.synth)\n",
++    "from ddi.vocab import build_vocab\n",
++    "from ddi.prompt import make_coneg_sample_fn, make_coneg_specs, prompt_fingerprint\n",
++    "from ddi.synth import generate_raw, build_dataset_from_raw\n",
++    "from ddi.manifest import load_dataset\n",
++    "import os\n",
++    "from openai import OpenAI\n",
++    "\n",
++    "client = OpenAI(base_url=\"http://api.llm.apps.os.dcs.gla.ac.uk/v1\",\n",
++    "                api_key=os.environ[\"IDA_LLM_API_KEY\"], max_retries=5, timeout=120.0)\n",
++    "\n",
++    "vocab    = build_vocab()\n",
++    "coneg_fn = make_coneg_sample_fn(client, max_output_tokens=4000)\n",
++    "\n",
++    "# ~2200 passages @ ~7.35 NONE each ≈ 16k NONE -> enough to build the mixing curve up to 0.85\n",
++    "specs = make_coneg_specs(2200, vocab=vocab, seed=1)\n",
++    "generate_raw(specs, coneg_fn, gen_id=\"v12-coneg-full\", max_workers=16)   # fresh id, not the smoke's\n",
++    "\n",
++    "cid, cstats = build_dataset_from_raw(\"v12-coneg-full\",\n",
++    "    generator={\"note\": \"coneg negative pool\", \"prompt_sha\": prompt_fingerprint()},\n",
++    "    vocab_source=vocab.fingerprint(), seed=1)\n",
++    "ci, cm = load_dataset(cid)\n",
++    "print(f\"NONE pool: {len(ci)} instances from 2200 specs  ({len(ci)/2200:.1f}/passage)\")\n",
++    "print(\"label dist:\", cm[\"label_distribution\"])          # want essentially all NONE"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "14",
+    "metadata": {},
+    "outputs": [],
+-   "source": []
++   "source": [
++    "import random\n",
++    "from ddi.manifest import load_dataset, write_dataset\n",
++    "from ddi.run import run_training\n",
++    "\n",
++    "synth_id = \"20260727-094204-79b898\"   # v11 synthetic set\n",
++    "\n",
++    "# --- source datasets ---\n",
++    "v11_inst, _   = load_dataset(synth_id)          # your v11 balanced set (positives + a little NONE)\n",
++    "coneg_inst, _ = load_dataset(cid)               # the ~16k co-mention NONE pool\n",
++    "\n",
++    "pos      = [r for r in v11_inst if r[\"label\"] != \"NONE\"]\n",
++    "v11_none = [r for r in v11_inst if r[\"label\"] == \"NONE\"]\n",
++    "pool_none = coneg_inst[:]                        # all coneg, all NONE\n",
++    "\n",
++    "print(f\"positives: {len(pos)}   v11 NONE: {len(v11_none)}   coneg NONE pool: {len(pool_none)}\")\n",
++    "\n",
++    "# cfg: reuse your training config; force a fixed seed so the curve isolates ratio, not seed noise\n",
++    "BASE = {\"model_name\": \"microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext\",\n",
++    "        \"epochs\": 3, \"lr\": 2e-5, \"batch_size\": 32, \"max_length\": 256,\n",
++    "        \"neg_ratio\": None, \"seed\": 0, \"dataset\": \"synthetic\"}\n",
++    "\n",
++    "def none_needed(n_pos, target):\n",
++    "    # target = NONE / (NONE + pos)  ->  NONE = target/(1-target) * pos\n",
++    "    return int(round(target / (1 - target) * n_pos))\n",
++    "\n",
++    "TARGETS = [0.30, 0.50, 0.70, 0.85]\n",
++    "rng = random.Random(0)\n",
++    "results = []\n",
++    "\n",
++    "for t in TARGETS:\n",
++    "    need = none_needed(len(pos), t)\n",
++    "    have = len(v11_none) + len(pool_none)\n",
++    "    if need > have:\n",
++    "        print(f\"  ratio {t}: need {need} NONE but only have {have} -- capping (max ratio {have/(have+len(pos)):.2f})\")\n",
++    "        need = have\n",
++    "    # take all v11 NONE first, top up from the coneg pool\n",
++    "    extra = max(0, need - len(v11_none))\n",
++    "    none_slice = v11_none + rng.sample(pool_none, min(extra, len(pool_none)))\n",
++    "    combined = pos + none_slice\n",
++    "    rng.shuffle(combined)\n",
++    "\n",
++    "    actual = len(none_slice) / len(combined)\n",
++    "    ds_id = write_dataset(\n",
++    "        combined, provenance=\"synthetic:v11+coneg-mix\",\n",
++    "        generator={\"note\": f\"mixing curve, target NONE {t}\", \"prompt_sha\": prompt_fingerprint()},\n",
++    "        seed=0, notes=f\"mix target={t} actual={actual:.3f}\")\n",
++    "    run_id, m = run_training(ds_id, dev_id, cfg=BASE, notes=f\"mix NONE={t}\")\n",
++    "    results.append((t, actual, m[\"micro_f1_pos\"], m[\"micro_p_pos\"], m[\"micro_r_pos\"]))\n",
++    "    print(f\"  NONE {t:.2f} (actual {actual:.2f})  F1={m['micro_f1_pos']:.3f}  \"\n",
++    "          f\"P={m['micro_p_pos']:.3f}  R={m['micro_r_pos']:.3f}\")\n",
++    "\n",
++    "print(\"\\n=== mixing curve ===\")\n",
++    "print(f\"{'target':>7} {'actual':>7} {'F1':>6} {'P':>6} {'R':>6}\")\n",
++    "for t, a, f, p, r in results:\n",
++    "    print(f\"{t:>7.2f} {a:>7.3f} {f:>6.3f} {p:>6.3f} {r:>6.3f}\")"
++   ]
+   }
+  ],
+  "metadata": {

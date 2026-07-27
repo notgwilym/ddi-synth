@@ -1,0 +1,26 @@
+{
+  "dataset_id": "20260727-123833-e56727",
+  "created_at": "2026-07-27T12:38:33",
+  "provenance": "human:full",
+  "generator": null,
+  "vocab_source": null,
+  "negative_strategy": null,
+  "seed": 0,
+  "size": {
+    "n_instances": 26785,
+    "n_sentences": 2429
+  },
+  "label_distribution": {
+    "MECHANISM": 743,
+    "EFFECT": 1132,
+    "ADVISE": 541,
+    "INT": 157,
+    "NONE": 24212
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "5d3d2323777e2f4690f97caffb9b570ad6ba0d03a11e634b1512c37109d54b54",
+  "leakage_report": null,
+  "git_sha": "7e0df504f0ea2b3eb5279417c5b504e70e05815e",
+  "git_dirty": true,
+  "notes": "full human baseline repro"
+}

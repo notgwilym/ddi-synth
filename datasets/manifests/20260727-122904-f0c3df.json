@@ -1,0 +1,26 @@
+{
+  "dataset_id": "20260727-122904-f0c3df",
+  "created_at": "2026-07-27T12:29:04",
+  "provenance": "human:subset:pos800_n85",
+  "generator": null,
+  "vocab_source": null,
+  "negative_strategy": null,
+  "seed": 0,
+  "size": {
+    "n_instances": 5333,
+    "n_sentences": 1280
+  },
+  "label_distribution": {
+    "NONE": 4533,
+    "ADVISE": 175,
+    "MECHANISM": 238,
+    "EFFECT": 345,
+    "INT": 42
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "f4577feb11502a23f86e418c0875a13ea97363f3686178777cf9f6de02010011",
+  "leakage_report": null,
+  "git_sha": "7e0df504f0ea2b3eb5279417c5b504e70e05815e",
+  "git_dirty": true,
+  "notes": "human control pos800_n85"
+}
