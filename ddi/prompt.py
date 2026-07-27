@@ -198,3 +198,52 @@ def make_verifier(client, model="gpt-oss-120b", temperature=0,
         return parsed.model_dump()
 
     return sample_fn
+
+CONEG_SYSTEM = """You are writing short clinical passages that list several medications a patient is taking concurrently, to serve as synthetic training data.
+
+You are given a document framing and a pool of drugs. Write a 1-3 sentence passage that mentions ALL of these drugs together as part of a shared medication regimen. Group several drugs per sentence.
+
+Example: "The patient's regimen included metformin, ramipril, and atorvastatin for diabetes, hypertension, and cardiovascular risk respectively, alongside amoxicillin for a concurrent infection."
+
+RULES
+- Every drug in the pool must appear in the text, grouped naturally with others.
+- You MUST list every drug you write, in the `entities` field, copying each name exactly as it appears in the text. The entities field must never be empty.
+- Describe the drugs only as co-administered. Do not describe any drug as affecting or interacting with another, and do not write "no interaction" or similar. Because no interactions are described, each sentence's `relations` field will be an empty list -- but `entities` must still contain every drug.
+
+Plain ASCII prose, no markdown."""
+
+
+def render_coneg(spec):
+    lines = [f"Write {spec['framing']}.", "",
+             "Mention all of these drugs together as concurrent, non-interacting medications:"]
+    lines += [f"  - {d}" for d in spec["drug_pool"]]
+    lines += ["", "Group several per sentence. Assert NO interactions between any of them."]
+    return "\n".join(lines)
+
+def make_coneg_specs(n, vocab, seed=1, pool_size=None, registers=None):
+    pool_size = pool_size or {4: 0.3, 5: 0.4, 6: 0.3}   # bigger pools -> more NONE pairs
+    registers = registers or {"DrugBank": 0.5, "MedLine": 0.5}
+    rng = random.Random(seed)
+    specs = []
+    for _ in range(n):
+        register = _pick(registers, rng)
+        k = _pick(pool_size, rng)
+        specs.append({"register": register,
+                      "framing": rng.choice(FRAMINGS[register]),
+                      "drug_pool": vocab.sample(k, rng)})
+    return specs
+
+def make_coneg_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+                         reasoning_effort="low", max_output_tokens=4000):
+    def sample_fn(spec):
+        kw = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
+        resp = client.responses.parse(
+            model=model,
+            input=[{"role": "system", "content": CONEG_SYSTEM},
+                   {"role": "user", "content": render_coneg(spec)}],
+            text_format=Generated, temperature=temperature,
+            max_output_tokens=max_output_tokens, **kw)
+        if resp.output_parsed is None:
+            raise ValueError(f"no parsed output (status={getattr(resp,'status','?')})")
+        return resp.output_parsed.model_dump()
+    return sample_fn
