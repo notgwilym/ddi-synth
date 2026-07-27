@@ -2,7 +2,8 @@ import json, os, itertools, threading, unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from .data import make_pair_instances
+from .data import MARKERS
+
 from .manifest import write_dataset, DATA_ROOT
 
 RAW = DATA_ROOT / "raw"
@@ -86,104 +87,142 @@ def _find_nth(sentence, surface, n):
             return start
     return -1
 
-
-def resolve_spans(sentence, entities):
-    """Locate each declared entity mention in the sentence by counting occurrences.
-
-    entities: list of {"id": "T1", "text": "ORENCIA", "type": "brand"} in order of
-    appearance. The model says WHICH mentions exist and in what order; we compute
-    WHERE (models cannot count characters reliably).
-
-    Mirrors the .ann convention: a surface form appearing twice is two entities
-    with distinct ids and distinct offsets.
-    """
-    seen = {}          # surface text (lowercased) -> occurrences already consumed
-    resolved = []
-    for ent in entities:
-        surface = ent["text"]
-        if not surface:
-            raise Rejected("empty entity text")
-        key = surface.lower()
-        n = seen.get(key, 0)
-        start = _find_nth(sentence, surface, n)
-        if start == -1:
-            raise Rejected(
-                f"entity {ent['id']!r} ({surface!r}) occurrence #{n + 1} not found in sentence"
-            )
-        seen[key] = n + 1
-        resolved.append(SynthEntity(ent["id"], start, start + len(surface),
-                                    ent.get("type", "drug")))
-
-    # overlapping spans mean the marker insertion would produce garbage
-    ordered = sorted(resolved, key=lambda e: e.locations.begin())
-    for a, b in zip(ordered, ordered[1:]):
+def _entities_in_sentence(text, names):
+    """Every occurrence of each known drug name in this sentence -> SynthEntity list.
+    name_of maps each entity object -> its lowercased drug name, for relation binding."""
+    ents, name_of = [], {}
+    for nm in dict.fromkeys(names):                     # unique, order preserved
+        k = 0
+        while True:
+            pos = _find_nth(text, nm, k)
+            if pos == -1:
+                break
+            e = SynthEntity(None, pos, pos + len(nm), "drug")
+            e.name_lc = nm.lower()
+            ents.append(e); name_of[id(e)] = nm.lower()
+            k += 1
+    ents = sorted(ents, key=lambda e: e.locations.begin())
+    for a, b in zip(ents, ents[1:]):
         if b.locations.begin() < a.locations.end():
-            raise Rejected(f"overlapping entity spans: {a.id} and {b.id}")
-    return resolved
+            raise Rejected("overlapping entity spans (one drug name is a substring of another?)")
+    for j, e in enumerate(ents):
+        e.id = f"T{j}"
+    return ents, name_of
 
+def _collapse_to_first_mention(entities):
+    """Synthetic only: keep one entity per unique drug name (first by position).
+    Relations are name-level here, so this gives one instance per name-pair and
+    removes self-pairs + repeated-partner contradictions. Diverges deliberately
+    from the human path, which enumerates every mention (gold is ID-level)."""
+    seen, out = set(), []
+    for e in sorted(entities, key=lambda e: e.locations.begin()):
+        nm = e.name_lc if hasattr(e, "name_lc") else None
+        if nm is None:
+            raise Rejected("entity missing name for collapse")
+        if nm not in seen:
+            seen.add(nm); out.append(e)
+    return out
 
-def sample_to_instances(sample, sent_id, register="synthetic", max_words=120):
-    """One raw model sample -> list of {text,label,source,sent_id} instances.
+def _make_pair_instances_synth(doc):
+    """Name-level labelling + one-mention-per-name. Synthetic path only."""
+    id2name = {e.id: e.name_lc for e in doc.entities}
+    name_label = {}
+    self_binds = 0
+    for rel in doc.relations:
+        n1 = id2name.get(rel.arguments["Arg1"])
+        n2 = id2name.get(rel.arguments["Arg2"])
+        if not n1 or not n2:
+            continue
+        if n1 == n2:                      # model bound a drug to another mention of itself
+            self_binds += 1
+            continue
+        name_label[frozenset((n1, n2))] = rel.type
 
-    Every entity pair is enumerated; pairs absent from `relations` fall through to
-    NONE. That is where in-distribution negatives come from -- for free.
-    """
+    ents = _collapse_to_first_mention(doc.entities)
+    out = []
+    for e1, e2 in itertools.combinations(ents, 2):
+        if e1.name_lc == e2.name_lc:
+            continue
+        inserts = sorted(
+            [(e1.locations.begin(), MARKERS[0]), (e1.locations.end(), MARKERS[1]),
+             (e2.locations.begin(), MARKERS[2]), (e2.locations.end(), MARKERS[3])],
+            key=lambda x: x[0], reverse=True)
+        t = doc.text
+        for pos, tag in inserts:
+            t = t[:pos] + tag + t[pos:]
+        label = name_label.get(frozenset((e1.name_lc, e2.name_lc)), "NONE")
+        out.append({"text": t, "label": label,
+                    "source": doc.register, "sent_id": doc.sent_id})
+    return out, self_binds
+
+def sample_to_instances(sample, sent_id_base, register="synthetic", max_words=200):
+    """Vignette sample -> per-sentence {text,label,source,sent_id} instances.
+
+    Schema: {sentences:[{text, relations:[{arg1,arg2,label}]}], entities:[{text,type}]}.
+    Relations are pre-scoped by the model to their own sentence, so there is no
+    cross-sentence inference and no reliance on model mention-ids. Binding is by drug
+    NAME within the declared sentence; a repeated name binds to the closest co-occurring
+    pair. Each sentence is paired independently via make_pair_instances, so non-asserted
+    pairs (including the same drug pair appearing un-interacting in another sentence)
+    fall through to NONE -- correct, in-distribution negatives."""
     if not isinstance(sample, dict):
         raise Rejected("no sample returned")
+    sents = sample.get("sentences") or []
+    if not sents:
+        raise Rejected("no sentences")
 
-    sentence = _normalise(sample.get("sentence") or "")
-    if not sentence:
-        raise Rejected("empty sentence")
-    if len(sentence.split()) > max_words:
-        raise Rejected(f"sentence too long ({len(sentence.split())} words)")
-    if _is_degenerate(sentence):
-        raise Rejected("degenerate repetition in sentence")
-
-    entities = sample.get("entities") or []
-    if len(entities) < 2:
-        raise Rejected(f"need >=2 entities to form a pair, got {len(entities)}")
-
-    # normalise entity surface forms the same way, and reject the failure mode
-    # where the model puts the whole sentence in the entity text field
-    norm_entities = []
-    for e in entities:
-        text = _normalise(e.get("text") or "")
-        if len(text.split()) > 12 or text == sentence:
+    entity_names = []
+    for e in (sample.get("entities") or []):
+        txt = _normalise(e.get("text") or "")
+        if not txt:
+            raise Rejected("empty entity text")
+        if len(txt.split()) > 12:
             raise Rejected("entity text looks like a sentence, not a name")
-        norm_entities.append({**e, "text": text})
+        entity_names.append(txt)
+    if len(entity_names) < 2:
+        raise Rejected(f"need >=2 entities to form a pair, got {len(entity_names)}")
+    known = {n.lower() for n in entity_names}
 
-    resolved = resolve_spans(sentence, norm_entities)
+    full = " ".join(_normalise(s.get("text") or "") for s in sents)
+    if len(full.split()) > max_words:
+        raise Rejected(f"passage too long ({len(full.split())} words)")
+    if _is_degenerate(full):
+        raise Rejected("degenerate repetition in passage")
 
-    # Relation args are referenced inconsistently: sometimes by the declared id,
-    # sometimes by the entity text, and sometimes the model fills every id with a
-    # literal like "text". Build an unambiguous lookup; deliberately NO positional
-    # fallback, because 0-based vs 1-based cannot be told apart and guessing wrong
-    # silently mislabels the pair.
-    canon = [f"T{i}" for i in range(len(resolved))]
-    for e, c in zip(resolved, canon):
-        e.id = c
-
-    lookup = {}
-    declared = [str(e.get("id", "")) for e in norm_entities]
-    if len(set(declared)) == len(declared):          # ids are usable only if unique
-        lookup.update(dict(zip(declared, canon)))
-    for e, c in zip(norm_entities, canon):           # ...else fall back to the text
-        lookup.setdefault(e["text"].lower(), c)
-
-    valid_ids = set(canon)
-    relations = []
-    for rel in sample.get("relations") or []:
-        a1 = lookup.get(str(rel.get("arg1_id")), lookup.get(str(rel.get("arg1_id", "")).lower()))
-        a2 = lookup.get(str(rel.get("arg2_id")), lookup.get(str(rel.get("arg2_id", "")).lower()))
-        if a1 not in valid_ids or a2 not in valid_ids:
-            raise Rejected(f"relation references unresolvable entity: "
-                           f"{rel.get('arg1_id')!r}, {rel.get('arg2_id')!r}")
-        if a1 == a2:
-            raise Rejected("self-relation")
-        relations.append(SynthRelation(a1, a2, rel["label"]))
-
-    doc = SynthDoc(sentence, resolved, relations, register, sent_id)
-    return make_pair_instances(doc)
+    instances = []
+    self_bind_count = 0
+    for i, sd in enumerate(sents):
+        text = _normalise(sd.get("text") or "")
+        if not text:
+            continue
+        ents, name_of = _entities_in_sentence(text, entity_names)
+        rels = []
+        malformed = 0
+        for rel in (sd.get("relations") or []):
+            a1 = _normalise(rel.get("arg1") or "").lower()
+            a2 = _normalise(rel.get("arg2") or "").lower()
+            if not a1 or not a2 or a1 not in known or a2 not in known:
+                malformed += 1                      # log it, don't raise
+                continue
+            if a1 == a2:
+                raise Rejected("self-relation")
+            m1 = [e for e in ents if name_of[id(e)] == a1]
+            m2 = [e for e in ents if name_of[id(e)] == a2]
+            if not m1 or not m2:
+                raise Rejected(f"relation {rel.get('label')} {a1}~{a2}: both args not in its sentence")
+            # a drug may legitimately repeat in one sentence; bind the closest pair
+            best = min(((e1, e2) for e1 in m1 for e2 in m2),
+                       key=lambda p: abs(p[0].locations.begin() - p[1].locations.begin()))
+            rels.append(SynthRelation(best[0].id, best[1].id, rel["label"]))
+        doc = SynthDoc(text, ents, rels, register, f"{sent_id_base}:s{i}")
+        sent_insts, sb = _make_pair_instances_synth(doc)
+        instances.extend(sent_insts)
+        self_bind_count += sb
+    if not instances:
+        raise Rejected("no instances produced (no sentence had >=2 entities)")
+    if self_bind_count:
+        print(f"warning: {self_bind_count} self-relations were ignored in {sent_id_base}")
+    return instances
 
 
 def generate_raw(specs, sample_fn, gen_id, max_workers=64, resume=True):

@@ -23,35 +23,44 @@ def _is_bad_name(n):
     if n.count("-") >= 3: return True
     return False
 
-def _load_drugbank(path):
-    """Cap-at-one: one canonical name per drug (Common_Name, else first clean synonym).
-    Synonyms are otherwise deferred as the future name-variation ablation."""
-    out = []
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            name = _norm(row.get("Common_Name_of_Drug") or "")
-            if not _is_bad_name(name):
-                out.append(name); continue
-            for syn in (row.get("Synonym") or "").split("|"):
-                syn = _norm(syn)
-                if syn and not _is_bad_name(syn):
-                    out.append(syn); break
-    return out
+_ADMIN = re.compile(r"\b(combinations?|other|others|various|excl\.?|incl\.?|"
+                    r"preparations?|products?|agents,|substances|reagents?|chemicals?|"
+                    r"equipment|disinfectants?|devices?|solutions?|diagnostic|"
+                    r"non-therapeutic|palliation|technical)\b"
+                    r"|chemotherapeutics|related", re.I)
+_NONDRUG = re.compile(r"\b(crab|pollen|herbarum|spp\.?|serotype|adenovirus|vaccine|"
+                      r"lecithin|starch|honey|extract)\b", re.I)
 
-def _load_atc(path):
-    """Tier by code length: 7-char = substance (drug), 4-5 char = subgroup (group),
-    1-3 char = anatomical top level (dropped -- never a DDI entity)."""
-    drugs, groups = [], []
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            code = (row.get("atc_code") or "").strip()
-            name = _norm(row.get("atc_name") or "")
-            if _is_bad_name(name): continue
-            if len(code) >= 7:
-                drugs.append(name)
-            elif len(code) in (4, 5):
-                groups.append(name.title() if name.isupper() else name)
-    return drugs, groups
+def _is_bad_group(name):
+    if _is_bad_name(name): return True
+    if len(name.split()) > 3: return True
+    if "," in name or _ADMIN.search(name): return True
+    return False
+
+def _is_bad_drug(name):
+    if _is_bad_name(name): return True
+    if len(name.split()) > 4: return True
+    if "," in name or _ADMIN.search(name) or _NONDRUG.search(name): return True
+    return False
+
+_ADMIN = re.compile(r"\b(combinations?|other|others|various|excl\.?|incl\.?|"
+                    r"preparations?|products?|agents,|substances|reagents?|chemicals?|"
+                    r"equipment|disinfectants?|devices?|solutions?|diagnostic|"
+                    r"non-therapeutic|palliation|technical)\b", re.I)
+_NONDRUG = re.compile(r"\b(crab|pollen|herbarum|spp\.?|serotype|adenovirus|vaccine|"
+                      r"lecithin|starch|honey|extract)\b", re.I)
+
+def _is_bad_group(name):
+    if _is_bad_name(name): return True
+    if len(name.split()) > 3: return True
+    if "," in name or _ADMIN.search(name): return True
+    return False
+
+def _is_bad_drug(name):
+    if _is_bad_name(name): return True
+    if len(name.split()) > 4: return True
+    if "," in name or _ADMIN.search(name) or _NONDRUG.search(name): return True
+    return False
 
 class Vocab:
     def __init__(self, drugs, groups, sources, p_group=0.3):
@@ -77,6 +86,32 @@ class Vocab:
         return {"name": "drugbank+atc", "sources": self.sources, "p_group": self.p_group,
                 "n_drugs": len(self.drugs), "n_groups": len(self.groups),
                 "sha256": h.hexdigest()[:12]}
+
+def _load_drugbank(path):
+    out = []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            name = _norm(row.get("Common_Name_of_Drug") or "")
+            if not _is_bad_drug(name):
+                out.append(name); continue
+            for syn in (row.get("Synonym") or "").split("|"):
+                syn = _norm(syn)
+                if syn and not _is_bad_drug(syn):
+                    out.append(syn); break
+    return out
+
+def _load_atc(path):
+    drugs, groups = [], []
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            code = (row.get("atc_code") or "").strip()
+            name = _norm(row.get("atc_name") or "")
+            if len(code) >= 7:
+                if not _is_bad_drug(name): drugs.append(name)
+            elif len(code) in (4, 5):
+                clean = name.title() if name.isupper() else name
+                if not _is_bad_group(clean): groups.append(clean)
+    return drugs, groups
 
 def build_vocab(p_group=0.3):
     db = _load_drugbank(OTHER / "DrugBank.csv")
