@@ -1,0 +1,40 @@
+{
+  "dataset_id": "20260727-082033-302ef2",
+  "created_at": "2026-07-27T08:20:33",
+  "provenance": "synthetic",
+  "generator": {
+    "prompt_sha": "903006b69dec",
+    "note": "parser-fix re-run",
+    "gen_id": "v10"
+  },
+  "vocab_source": {
+    "name": "drugbank+atc",
+    "sources": [
+      "drugbank",
+      "atc"
+    ],
+    "p_group": 0.3,
+    "n_drugs": 14932,
+    "n_groups": 425,
+    "sha256": "089ea59a2351"
+  },
+  "negative_strategy": null,
+  "seed": 0,
+  "size": {
+    "n_instances": 33,
+    "n_sentences": 33
+  },
+  "label_distribution": {
+    "INT": 11,
+    "NONE": 3,
+    "EFFECT": 10,
+    "ADVISE": 4,
+    "MECHANISM": 5
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "565884455ebff32f3d10504156848e884786599a7d173daea4784e5594375d6c",
+  "leakage_report": null,
+  "git_sha": "7601bc2125471b85d656eef6defb544bda9fd8ce",
+  "git_dirty": true,
+  "notes": ""
+}
