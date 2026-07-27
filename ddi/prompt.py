@@ -150,23 +150,45 @@ def make_sample_fn(client, model="gpt-oss-120b", temperature=0.7,
 
     return sample_fn
 
-VERIFIER_SYSTEM = """ You are an expert biomedical annotator applying the DDI-2013
-annotation guidelines. You will be shown one sentence containing two drug entities marked
-[E1]...[/E1] and [E2]...[/E2]. Classify the relationship asserted between the
-[E1] drug and the [E2] drug, considering only what the sentence states.
+VERIFIER_SYSTEM = """You are an expert biomedical annotator applying the DDI-2013 annotation guidelines. You are shown one sentence with two drug entities marked [E1]...[/E1] and [E2]...[/E2]. Assign the type of drug-drug interaction (DDI) asserted in the sentence between the [E1] drug and the [E2] drug, considering ONLY what the sentence states.
 
-RELATION DEFINITIONS (from DDI-2013 guidelines):
-- MECHANISM: a pharmacokinetic interaction is stated (absorption, metabolism,
-  clearance, plasma-concentration change).
-- EFFECT: a pharmacodynamic effect or an unspecified clinical effect is stated.
-- ADVISE: a recommendation about co-administration is given.
-- INT: an interaction is stated with no detail of type or effect.
-- NONE: the sentence asserts no interaction between these two specific drugs,
-  even if they interact with other drugs present, or interact in reality but
-  not in this sentence.
+A DDI is a change in the effects of one drug by the presence of another drug. Annotate the relationship between the two marked entities only. Interactions are annotated at sentence level: information in other sentences is irrelevant.
 
-Return JSON: {label, justification}  — justification one clause, citing the span
-of text that determines the label.
+LABELS
+
+MECHANISM — assigned when a PHARMACOKINETIC mechanism is described: a change in how a drug is absorbed, distributed, metabolized or excreted, or a change in its levels or concentration. This includes volume of distribution, bioavailability, peak level, AUC, clearance and half-life.
+  - "Grepafloxacin, like other quinolones, may inhibit the metabolism of caffeine." -> MECHANISM
+  - "probenecid increased the AUC by 25 percent and reduced the plasma and renal clearances." -> MECHANISM
+  - "Elevated plasma levels of theophylline have been reported with concomitant quinolone use." -> MECHANISM
+
+EFFECT — assigned when the sentence describes the EFFECT of the interaction: a pharmacological effect, a clinical finding, a sign or symptom, an increase in toxicity, a protective effect, therapeutic failure, or an unspecified modification of one drug's effect. ALSO assigned when the sentence describes a PHARMACODYNAMIC mechanism (synergistic/additive/potentiated, or antagonistic).
+  - "The concomitant administration of ciprofloxacin with glyburide has resulted in severe hypoglycemia." -> EFFECT
+  - "Quinolones may enhance the effects of the oral anticoagulant, warfarin." -> EFFECT
+  - "Antagonism has been demonstrated between clindamycin and erythromycin in vitro." -> EFFECT (pharmacodynamic)
+  - "Methionine may protect against the ototoxic effects of gentamicin." -> EFFECT (protective)
+
+ADVISE — assigned when a recommendation or advice about the concomitant use of the two drugs is given.
+  - "UROXATRAL should not be used in combination with other alpha-blockers." -> ADVISE
+  - "DISULFIRAM should be used with caution in those patients receiving PHENYTOIN." -> ADVISE
+
+INT — assigned when the sentence states that an interaction occurs but gives NO information about its effect, mechanism, or any advice, so none of the other three types can apply. Often appears in abstract titles.
+  - "The interaction of omeprazole and ketoconazole has been established." -> INT
+  - "linezolid has the potential for interaction with adrenergic and serotonergic agents." -> INT
+
+NONE — assigned when the sentence asserts NO annotatable interaction between the two MARKED drugs. This is the default: if the sentence does not assert an interaction between [E1] and [E2] that fits one of the four types above, the answer is NONE. Assign NONE when:
+  - The two marked drugs are merely co-mentioned, co-listed, or co-administered, with no interaction asserted between THEM (e.g. one is a background co-medication, or both appear in a list of a third drug's interactions).
+  - The asserted interaction is between one marked drug and some OTHER drug/class in the sentence, not between [E1] and [E2].
+  - The interaction is NEGATED — stated not to occur or not to alter pharmacokinetics (§4.5.1). "The pharmacokinetics of CANCIDAS are not altered by itraconazole." -> NONE
+  - The sentence only states that an interaction was STUDIED/investigated, without confirming it occurs (§4.5.5). "The interaction of prostaglandin F2alpha and oxytocin was studied in vitro." -> NONE
+  - The sentence describes interference with a LABORATORY TEST, not a drug-drug interaction.
+
+RULES
+- Annotate certainty-independently: a possible/suggested/in-vitro interaction IS annotated if it is asserted to occur (§4.5.2).
+- Annotate beneficial and harmful interactions alike (§4.5.3).
+- If an interaction is affirmed, annotate it even if a negation also appears for the same pair in the sentence (§4.5.4). "Although this interaction has not been reported with cinoxacin, caution should be exercised when cinoxacin is given with caffeine." -> ADVISE
+- TIE-BREAK when more than one type could fit: a pharmacokinetic description is MECHANISM; a pharmacodynamic description is EFFECT. If advice AND an effect/mechanism both appear, prefer the type that the sentence most specifically asserts about the pair.
+
+Return JSON: {label, justification} — justification one clause, quoting the span of text that determines the label.
 """
 
 def make_verifier(client, model="gpt-oss-120b", temperature=0,
