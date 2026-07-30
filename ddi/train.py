@@ -10,7 +10,8 @@ from .data import ALL_LABELS, MARKERS, POSITIVE_LABELS
 
 def build_tokenizer(cfg):
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
-    tok.add_tokens(MARKERS)
+    if cfg.get("render_mode", "markers") == "markers":
+        tok.add_tokens(MARKERS)
     return tok
 
 def score(y_true, y_pred, sources, label2id):

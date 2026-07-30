@@ -43,7 +43,7 @@ def _label_distribution(instances):
 
 
 def write_dataset(instances, provenance, *, generator=None, vocab_source=None,
-                  negative_strategy=None, seed=None, notes=""):
+                  negative_strategy=None, seed=None, notes="", render_mode="markers", parent_id=None):
     """Persist a set of instances + a manifest describing them. Returns the dataset_id.
 
     instances        : list of {text, label, source, sent_id} dicts
@@ -67,6 +67,8 @@ def write_dataset(instances, provenance, *, generator=None, vocab_source=None,
         "generator": generator,
         "vocab_source": vocab_source,
         "negative_strategy": negative_strategy,
+        "parent_id": parent_id,
+        "render_mode": render_mode,
         "seed": seed,
         "size": {"n_instances": len(instances), "n_sentences": n_sent},
         "label_distribution": _label_distribution(instances),

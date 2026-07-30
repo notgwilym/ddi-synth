@@ -59,32 +59,72 @@ POSITIVE_LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
 ALL_LABELS = ["NONE"] + POSITIVE_LABELS
 
 
-def make_pair_instances(doc):
+RENDER_MODES = ("markers", "mask_targets", "mask_all")
+
+
+class Overlap(Exception):
+    """Spans to be rendered overlap; the instance can't be rendered safely."""
+
+
+def render_pair(text, e1, e2, others=(), mode="markers"):
+    b1, n1 = e1.locations.begin(), e1.locations.end()
+    b2, n2 = e2.locations.begin(), e2.locations.end()
+
+    if mode == "markers":
+        # insertion, not replacement: tolerates nested spans, byte-identical to the
+        # original make_pair_instances
+        inserts = sorted([(b1, MARKERS[0]), (n1, MARKERS[1]),
+                          (b2, MARKERS[2]), (n2, MARKERS[3])],
+                         key=lambda x: x[0], reverse=True)
+        out = text
+        for pos, tag in inserts:
+            out = out[:pos] + tag + out[pos:]
+        return out
+
+    if mode not in ("mask_targets", "mask_all"):
+        raise ValueError(f"unknown render mode {mode!r}")
+
+    edits = [(b1, n1, "drug1"), (b2, n2, "drug2")]
+    if mode == "mask_all":
+        for e in others:
+            b, n = e.locations.begin(), e.locations.end()
+            if (b, n) in ((b1, n1), (b2, n2)):
+                continue
+            if not (n <= b1 or b >= n1) or not (n <= b2 or b >= n2):
+                continue
+            edits.append((b, n, "drug0"))
+
+    edits.sort(key=lambda x: x[0])
+    for (_, a_end, _), (c_begin, _, _) in zip(edits, edits[1:]):
+        if c_begin < a_end:
+            raise Overlap(f"overlapping spans: {[(b, n) for b, n, _ in edits]}")
+
+    out = text
+    for b, n, repl in reversed(edits):
+        out = out[:b] + repl + out[n:]
+    return out
+
+
+def make_pair_instances(doc, mode="markers"):
     candidate_to_label = {}
     for rel in doc.relations:
         candidate_to_label[(rel.arguments["Arg1"], rel.arguments["Arg2"])] = rel.type
 
     entities = sorted(doc.entities, key=lambda e: e.locations.begin())
-
-    labelled_data = []
+    labelled_data, n_overlap = [], 0
     for e1, e2 in itertools.combinations(entities, 2):
-        inserts = [
-            (e1.locations.begin(), MARKERS[0]),
-            (e1.locations.end(), MARKERS[1]),
-            (e2.locations.begin(), MARKERS[2]),
-            (e2.locations.end(), MARKERS[3]),
-        ]
-        inserts = sorted(inserts, key=lambda x: x[0], reverse=True)
-        new_text = doc.text
-        for pos, tag in inserts:
-            new_text = new_text[:pos] + tag + new_text[pos:]
-        label = (
-            candidate_to_label.get((e1.id, e2.id))
-            or candidate_to_label.get((e2.id, e1.id)) # normally redundant
-            or "NONE"
-        )
+        try:
+            new_text = render_pair(doc.text, e1, e2, entities, mode)
+        except Overlap:
+            n_overlap += 1
+            continue
+        label = (candidate_to_label.get((e1.id, e2.id))
+                 or candidate_to_label.get((e2.id, e1.id))
+                 or "NONE")
         labelled_data.append({"text": new_text, "label": label,
                               "source": doc.register, "sent_id": doc.sent_id})
+    if n_overlap:
+        print(f"warning: {n_overlap} pairs skipped for overlapping spans in {doc.sent_id}")
     return labelled_data
 
 

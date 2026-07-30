@@ -2,7 +2,7 @@ import json, os, itertools, threading, unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from .data import MARKERS
+from .data import MARKERS, render_pair, Overlap
 
 from .manifest import write_dataset, DATA_ROOT
 
@@ -123,8 +123,7 @@ def _collapse_to_first_mention(entities):
             seen.add(nm); out.append(e)
     return out
 
-def _make_pair_instances_synth(doc):
-    """Name-level labelling + one-mention-per-name. Synthetic path only."""
+def _make_pair_instances_synth(doc, mode="markers"):
     id2name = {e.id: e.name_lc for e in doc.entities}
     name_label = {}
     self_binds = 0
@@ -133,7 +132,7 @@ def _make_pair_instances_synth(doc):
         n2 = id2name.get(rel.arguments["Arg2"])
         if not n1 or not n2:
             continue
-        if n1 == n2:                      # model bound a drug to another mention of itself
+        if n1 == n2:
             self_binds += 1
             continue
         name_label[frozenset((n1, n2))] = rel.type
@@ -143,19 +142,17 @@ def _make_pair_instances_synth(doc):
     for e1, e2 in itertools.combinations(ents, 2):
         if e1.name_lc == e2.name_lc:
             continue
-        inserts = sorted(
-            [(e1.locations.begin(), MARKERS[0]), (e1.locations.end(), MARKERS[1]),
-             (e2.locations.begin(), MARKERS[2]), (e2.locations.end(), MARKERS[3])],
-            key=lambda x: x[0], reverse=True)
-        t = doc.text
-        for pos, tag in inserts:
-            t = t[:pos] + tag + t[pos:]
+        try:
+            t = render_pair(doc.text, e1, e2, ents, mode)
+        except Overlap:
+            continue
         label = name_label.get(frozenset((e1.name_lc, e2.name_lc)), "NONE")
         out.append({"text": t, "label": label,
                     "source": doc.register, "sent_id": doc.sent_id})
     return out, self_binds
 
-def sample_to_instances(sample, sent_id_base, register="synthetic", max_words=200):
+
+def sample_to_instances(sample, sent_id_base, register="synthetic", max_words=200, mode="markers"):
     """Vignette sample -> per-sentence {text,label,source,sent_id} instances.
 
     Schema: {sentences:[{text, relations:[{arg1,arg2,label}]}], entities:[{text,type}]}.
@@ -215,7 +212,7 @@ def sample_to_instances(sample, sent_id_base, register="synthetic", max_words=20
                        key=lambda p: abs(p[0].locations.begin() - p[1].locations.begin()))
             rels.append(SynthRelation(best[0].id, best[1].id, rel["label"]))
         doc = SynthDoc(text, ents, rels, register, f"{sent_id_base}:s{i}")
-        sent_insts, sb = _make_pair_instances_synth(doc)
+        sent_insts, sb = _make_pair_instances_synth(doc, mode=mode)
         instances.extend(sent_insts)
         self_bind_count += sb
     if not instances:
@@ -289,7 +286,7 @@ def generate_raw(specs, sample_fn, gen_id, max_workers=64, resume=True):
 
 
 def build_dataset_from_raw(gen_id, generator, vocab_source=None,
-                           negative_strategy=None, seed=None, notes=""):
+                           negative_strategy=None, seed=None, notes="", mode="markers"):
     """Deterministic: raw model output -> instances -> manifested dataset.
 
     Free to re-run whenever the resolver or pair logic changes. Returns
@@ -309,7 +306,7 @@ def build_dataset_from_raw(gen_id, generator, vocab_source=None,
         sent_id = f"synth:{gen_id}:{rec['spec_index']}"
         register = (rec.get("spec") or {}).get("register", "synthetic")
         try:
-            instances.extend(sample_to_instances(rec["sample"], sent_id, register=register))
+            instances.extend(sample_to_instances(rec["sample"], sent_id, register=register, mode=mode))
         except Rejected as e:
             rejects.append({"spec_index": rec["spec_index"], "reason": str(e),
                             "sample": rec["sample"]})
@@ -335,7 +332,7 @@ def build_dataset_from_raw(gen_id, generator, vocab_source=None,
     dataset_id = write_dataset(
         instances, provenance="synthetic", generator={**(generator or {}), "gen_id": gen_id},
         vocab_source=vocab_source, negative_strategy=negative_strategy,
-        seed=seed, notes=notes,
+        seed=seed, notes=notes, render_mode=mode,
     )
     print(f"stage 2: {stats['n_rejected']} rejected, {stats['n_instances']} instances kept")
     return dataset_id, stats
