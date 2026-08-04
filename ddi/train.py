@@ -43,7 +43,7 @@ def score(y_true, y_pred, sources, label2id):
         m[f"micro_f1_pos_{source}"], m[f"micro_p_pos_{source}"], m[f"micro_r_pos_{source}"] = float(f), float(p), float(r)
     return m
 
-def train_and_eval(cfg, train_records, val_records):
+def train_and_eval(cfg, train_records, val_records, return_preds=False):
     def prep(recs):
         ds = Dataset.from_list([
             {"text": r["text"], "labels": label2id[r["label"]]} for r in recs
@@ -99,4 +99,6 @@ def train_and_eval(cfg, train_records, val_records):
     m["train_size"] = len(train_records)
     m["val_size"] = len(val_records)
     m["train_time"] = round(time.time() - t0, 1)
+    if return_preds:
+        return m, [ALL_LABELS[i] for i in y_pred]
     return m
