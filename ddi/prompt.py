@@ -1,249 +1,493 @@
-from pydantic import BaseModel
-from typing import Literal
-import random, hashlib
+"""Generator v14.
 
-class Entity(BaseModel):
-    text: str
-    type: str = "drug"
+The failure this replaces: v13 drew positives from the vignette generator (~1 pair per
+sentence) and negatives from CONEG (6-15 pairs), so entity count predicted the label.
+One-pair sentences were 75% positive, multi-pair ~100% negative, hard negative rate
+0.001 against a corpus prose rate of ~0.50. The entity markers carried no signal at all
+because pair identity was never a variable. Here every sentence comes from one sampler
+and one prompt, and zero-assertion specs are drawn from the same distribution, so no
+structural property can separate the classes.
 
-class Relation(BaseModel):
-    arg1: str                       # drug name, must appear in this sentence
-    arg2: str
-    label: Literal["ADVISE", "EFFECT", "INT", "MECHANISM"]
+Two things about the prompt that are easy to get wrong, and were:
 
-class Sentence(BaseModel):
-    text: str
-    relations: list[Relation] = []  # interactions asserted IN this sentence
+The label NAME must not reach the model: v13 wrote "a clear MECHANISM interaction" into
+sentences. The label CRITERIA must reach it, or a spec describing a change in exposure
+can produce a sentence an annotator would read as a clinical effect, and the gold label
+is then wrong. Those are separable, and the system prompt carries the criteria as kinds
+of statement with worked examples on placeholder names.
 
-class Generated(BaseModel):
-    sentences: list[Sentence]       # the passage, pre-split by the model
-    entities: list[Entity]          # every drug surface form used
+Nothing in a spec is a phrase that can be lifted. Content is slot tokens with a rotated
+alias pool per slot, so the model builds the syntax itself rather than rephrasing a
+clause it was handed.
 
-VIGNETTE_SYSTEM = """You are writing short passages to serve as synthetic training data for a drug-interaction classifier. These are NOT real clinical claims; do not worry about whether an interaction is pharmacologically real, only that it is clearly written and correctly typed.
-
-You are given a document framing, a pool of drugs, and target drug-drug interaction (DDI) types to assert. A DDI is a change in the effects of one drug by the presence of another. The types:
-
-MECHANISM — assigned when a PHARMACOKINETIC mechanism is described: a change in how a drug is absorbed, distributed, metabolized or excreted, or a change in its levels or concentration. This includes volume of distribution, bioavailability, peak level, AUC, clearance and half-life.
-  - "Grepafloxacin, like other quinolones, may inhibit the metabolism of caffeine." -> MECHANISM
-  - "probenecid increased the AUC by 25 percent and reduced the plasma and renal clearances." -> MECHANISM
-  - "Elevated plasma levels of theophylline have been reported with concomitant quinolone use." -> MECHANISM
-
-EFFECT — assigned when the sentence describes the EFFECT of the interaction: a pharmacological effect, a clinical finding, a sign or symptom, an increase in toxicity, a protective effect, therapeutic failure, or an unspecified modification of one drug's effect. ALSO assigned when the sentence describes a PHARMACODYNAMIC mechanism (synergistic/additive/potentiated, or antagonistic).
-  - "The concomitant administration of ciprofloxacin with glyburide has resulted in severe hypoglycemia." -> EFFECT
-  - "Quinolones may enhance the effects of the oral anticoagulant, warfarin." -> EFFECT
-  - "Antagonism has been demonstrated between clindamycin and erythromycin in vitro." -> EFFECT (pharmacodynamic)
-  - "Methionine may protect against the ototoxic effects of gentamicin." -> EFFECT (protective)
-
-ADVISE — assigned when a recommendation or advice about the concomitant use of the two drugs is given.
-  - "UROXATRAL should not be used in combination with other alpha-blockers." -> ADVISE
-  - "DISULFIRAM should be used with caution in those patients receiving PHENYTOIN." -> ADVISE
-
-INT — assigned when the sentence states that an interaction occurs but gives NO information about its effect, mechanism, or any advice, so none of the other three types can apply. Often appears in abstract titles.
-  - "The interaction of omeprazole and ketoconazole has been established." -> INT
-  - "linezolid has the potential for interaction with adrenergic and serotonergic agents." -> INT
-  
-  
-RULES
-- Assert each target interaction once, in natural prose, between a plausible-sounding pair of drugs from the pool. Pick a pair and commit; do not deliberate over realism.
-- Put each interaction ENTIRELY within one sentence; both named drugs must appear in that sentence. Record it in that sentence's relations (the two drug names exactly as written, and the type).
-- Assert at most ONE interaction per drug pair. Never give one pair two types.
-- Every pool drug must appear. Drugs not in an interaction are mentioned only in their given role, as bare context -- never comment on their safety. Do NOT write "no interaction", "without interaction", "no reported interaction", "without adverse outcomes", "well tolerated", "may be taken safely", or any similar phrase. A non-interacting drug is simply named in its role and left alone.
-- Do not collect leftover drugs into a summary sentence ("the regimen also included...").
-- Don't include the labels (MECHANISM, EFFECT, ADVISE, INT) in the text. Express the interaction in ordinary clinical language. 
-- Only record a relation for a sentence that actually asserts an interaction between two named drugs from the pool. A sentence that merely mentions a drug in its role has no relations — leave its relation list empty. Every relation must name two different drugs.
-
-Return the passage as a list of sentences. For each sentence, record any interactions asserted in it, giving the two interacting drugs by their exact surface form as written in that sentence, and the interaction type. List every drug surface form you use. Use plain ASCII prose; no markdown."""
-
-FRAMINGS = {
-    "DrugBank": [
-        "the interactions subsection of a drug's prescribing information",
-        "a drug-label precautions statement",
-        "a summary of product characteristics, interactions section",
-    ],
-    "MedLine": [
-        "the findings section of a biomedical journal abstract",
-        "a short case report of a patient taking several medications",
-        "a pharmacovigilance case series describing co-administration",
-        "a review of concomitant drug therapy in a treated patient",
-    ],
-}
-
-ROLES = ["a background therapy", "a comparator agent", "a prior medication",
-         "a concurrent treatment for an unrelated condition",
-         "part of the patient's regular regimen", "an incidental co-medication"]
-
-def render_vignette(spec):
-    lines = [f"Write {spec['framing']}.", ""]
-    lines += ["Drugs to include (use every one, exactly as spelled):"]
-    lines += [f"  - {d}" for d in spec["drug_pool"]]
-    lines += ["", "Assert these interactions (you choose which drugs realise each):"]
-    lines += [f"  - one {t['label']} interaction" for t in spec["targets"]]
-    lines += ["", "Any drug not part of an interaction should appear woven into the "
-              "narrative in a distinct role such as: " + ", ".join(spec["roles"]) + ". "
-              "Do not collect them into a trailing summary sentence."]
-    return "\n".join(lines)
+Every axis is filtered against register, scope, and whether the spec asserts anything at
+all. An unfiltered axis produces specs the model cannot satisfy: a no-assertion spec
+told to make "the affected drug" the subject, or a recommended-action spec told to make
+plasma concentrations the subject. The model then violates one instruction or the other
+and which one is unpredictable.
+"""
+import hashlib
+import itertools
+import random
 
 LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
-DEFAULT_POOL_SIZE = {3: 0.25, 4: 0.45, 5: 0.20, 6: 0.10}
+
+# PRIOR is hand-specified from the annotation guidelines, matching the existing
+# p_group=0.3 policy and keeping the from-scratch claim clean. MEASURED comes from the
+# training split with the eight monster sentences excluded. Run both as arms: if they
+# perform alike, the corpus statistics were a convenience rather than a crutch.
+PRIOR = {
+    "n_entities": {2: 0.40, 3: 0.30, 4: 0.20, 5: 0.10},
+    "n_positives": {0: 0.45, 1: 0.40, 2: 0.15},
+    "labels": {l: 0.25 for l in LABELS},
+    "registers": {"DrugBank": 0.5, "MedLine": 0.5},
+}
+MEASURED = {
+    "n_entities": {2: 0.410, 3: 0.272, 4: 0.137, 5: 0.073, 6: 0.040},
+    "n_positives": {0: 0.448, 1: 0.375, 2: 0.086},
+    "labels": {"EFFECT": 0.440, "MECHANISM": 0.289, "ADVISE": 0.210, "INT": 0.061},
+    "registers": {"DrugBank": 0.85, "MedLine": 0.15},
+}
+COMPOSITION = {"prior": PRIOR, "measured": MEASURED}
+
+
+SYSTEM = """You write single sentences of biomedical text for a fictional drug interaction dataset. 
+
+Each request lists drug names, the content the sentence carries, and a style. Write
+exactly one sentence.
+
+WHAT THE SENTENCE ASSERTS
+
+A request either asks you to assert something between two named drugs, or asks for no
+assertion at all. When it does, the "scope" line says which kind of statement to write.
+The four kinds are exclusive. Write the one asked for and none of the others: a sentence
+that mixes them cannot be used.
+
+1. Exposure and handling / mechanism. How much of one drug is present, or how the body takes it up,
+   distributes it, breaks it down or removes it, changed by the presence of the other.
+   Say what changes and in which direction. Do not say what happens to the patient as a
+   result.
+
+2. Clinical consequence / effect.  What follows for the patient when the two are combined: an
+   effect, a risk, a loss of efficacy. Say what the consequence is. Do not explain the
+   handling or the levels that produce it.
+
+3. Recommended action / advice. What a prescriber should do about the combination. Say what
+   should be done. Do not state the consequence or the mechanism motivating it.
+
+4. Bare interaction. That the two interact, and nothing further. No mechanism, no
+   consequence, no advice, no figures.
+
+Only the pair named in the statement block is being asserted about. Other drugs in the
+list are present in the sentence but nothing is claimed between them, or between them
+and the pair.
+
+WHEN NO ASSERTION IS ASKED FOR
+
+Some requests have no statement block. Write ordinary clinical or research prose that
+places every listed drug in the situation described at the top: a regimen, a comparison,
+a sequence of treatments. Nothing in the sentence says that any drug affects any other.
+
+RULES
+
+- Use every drug name listed, and no others.
+- Reproduce each name as given, including any punctuation or non-ASCII characters in it.
+- Every drug you name must be doing something in the sentence.
+- Do not worry about whether the drugs are actually used together in practice: the sentence is a fiction.
+- The sentence should read as plausible clinical or research prose.
+- Match verb agreement to the name; some names are plural.
+- One sentence. No markdown."""
+
+
+# The scope line is what stops a spec producing a sentence an annotator would read as a
+# different class. It names the kind without naming the label.
+SCOPE = {
+    "MECHANISM": "exposure and handling only, no clinical consequence",
+    "EFFECT": "clinical consequence only, no explanation of handling or levels",
+    "ADVISE": "recommended action only, no consequence and no mechanism",
+    "INT": "bare interaction only, no mechanism, consequence, advice or figures",
+}
+
+
+# ---------------------------------------------------------------- content slots
+# Each slot is a token with a small alias pool; one alias is drawn per call, so the
+# lexical surface rotates while the semantics hold. Aliases are noun phrases, never
+# clauses: the model supplies every verb.
+
+SITES = {
+    "hepatic_metabolism": ["hepatic metabolism", "CYP-mediated metabolism",
+                           "oxidative metabolism", "liver enzyme activity",
+                           "first-pass metabolism"],
+    "absorption": ["gastrointestinal absorption", "uptake from the gut",
+                   "oral absorption", "absorption from the gastrointestinal tract"],
+    "protein_binding": ["plasma protein binding", "binding to serum albumin",
+                        "the protein-bound fraction"],
+    "renal_clearance": ["renal clearance", "excretion by the kidney",
+                        "tubular secretion", "urinary elimination"],
+    "transporter": ["P-glycoprotein transport", "efflux transport",
+                    "carrier-mediated transport", "intestinal transport"],
+    "gastric_ph": ["gastric pH", "stomach acidity", "gastric acid secretion"],
+}
+EXPOSURE = ["higher", "lower"]
+
+OUTCOMES = {
+    "bleeding": ["bleeding", "haemorrhage", "bleeding risk"],
+    "sedation": ["sedation", "drowsiness", "central nervous system depression"],
+    "hypotension": ["hypotension", "a drop in blood pressure"],
+    "arrhythmia": ["arrhythmia", "irregular heart rhythm", "cardiac conduction changes"],
+    "nephrotoxicity": ["nephrotoxicity", "impaired kidney function", "renal injury"],
+    "hepatotoxicity": ["hepatotoxicity", "raised liver enzymes", "liver injury"],
+    "hypoglycaemia": ["hypoglycaemia", "low blood glucose"],
+    "myopathy": ["myopathy", "muscle damage", "rhabdomyolysis"],
+    "seizures": ["seizures", "convulsions", "a lowered seizure threshold"],
+    "respiratory_depression": ["respiratory depression", "slowed breathing"],
+    "qt": ["QT prolongation", "prolongation of the QT interval"],
+    "loss_of_efficacy": ["loss of therapeutic effect", "reduced efficacy"],
+}
+VALENCE = ["greater", "reduced", "new"]
+
+ACTIONS = {
+    "avoid": ["avoidance of the combination", "contraindication"],
+    "dose_reduction": ["dose reduction", "a lower starting dose", "dose adjustment"],
+    "monitoring": ["closer monitoring", "monitoring of blood levels",
+                   "clinical observation"],
+    "timing": ["separation of dosing times", "staggered administration"],
+    "discontinuation": ["discontinuation before the other is started",
+                        "withdrawal of one agent"],
+}
+
+# Non-participant roles. group records whether the role implies concurrent use.
+# "separated" roles make an interaction semantically unavailable, so the label is safe
+# by construction. "concurrent" roles are the realistic hard-negative case. Keeping only
+# the separated ones would trade the composition shortcut for a lexical one.
+ROLES = {
+    "prior_therapy": ("separated", ["given earlier and since stopped",
+                                    "the previous treatment"]),
+    "subsequent": ("separated", ["started after the others were withdrawn",
+                                 "the treatment that followed"]),
+    "comparator": ("separated", ["evaluated in a separate arm",
+                                 "the comparator agent"]),
+    "alternative": ("separated", ["used instead when the first choice is unsuitable",
+                                  "the substitute option"]),
+    "not_enrolled": ("separated", ["excluded from the study population",
+                                   "not permitted during the study"]),
+    "concomitant": ("concurrent", ["part of the same regimen",
+                                   "taken at the same time"]),
+    "background": ("concurrent", ["treating an unrelated condition",
+                                  "the patient's other ongoing medication"]),
+}
+ROLE_GROUP_DIST = {"separated": 0.45, "concurrent": 0.55}
+
+
+# ---------------------------------------------------------------- realisation
+# One or two axes per call. Six instructions is more than the model holds at once, and
+# each is another chance to leave a visible seam.
+
+AXES = {
+    "subject": ["the agent drug", "the affected drug", "the combination",
+                "plasma concentrations", "the patients", "the study"],
+    "voice": ["active", "passive"],
+    "certainty": ["established", "possible", "observed", "a single case"],
+    "detail": ["no figures", "direction only", "one figure",
+               "a pharmacokinetic figure"],
+    "position": ["main clause", "subordinate clause", "relative clause"],
+}
+N_AXES = {1: 0.45, 2: 0.55}
+
+# DrugBank product labels have no participants and no statistics; MedLine abstracts do.
+REGISTER_BANS = {
+    "DrugBank": {"subject": {"the patients", "the study"},
+                 "certainty": {"a single case"},
+                 "detail": {"a pharmacokinetic figure"}},
+    "MedLine": {},
+}
+
+# Each scope forbids the axis values that contradict it. Without these the spec asks the
+# model to write a recommendation whose subject is a plasma concentration, or a bare
+# interaction with a stated direction.
+LABEL_BANS = {
+    "MECHANISM": {},
+    "EFFECT": {"subject": {"plasma concentrations"},
+               "detail": {"a pharmacokinetic figure"}},
+    "ADVISE": {"subject": {"plasma concentrations"},
+               "certainty": {"a single case"},
+               "detail": {"direction only", "one figure", "a pharmacokinetic figure"}},
+    "INT": {"subject": {"plasma concentrations", "the combination"},
+            "detail": {"direction only", "one figure", "a pharmacokinetic figure"},
+            "position": {"relative clause"}},
+}
+
+# With no statement there is no agent, no affected, no clause to position and no detail
+# to give. Only voice, certainty, and the subjects that exist without an assertion.
+NO_ASSERT_AXES = ["voice", "certainty", "subject"]
+NO_ASSERT_SUBJECTS = ["one of the drugs listed", "the treatment", "the regimen"]
+NO_ASSERT_BANS = {"subject": {"the agent drug", "the affected drug",
+                              "plasma concentrations", "the combination"}}
+
+REGISTER_LINE = {
+    "DrugBank": "product label prose: impersonal, present tense, no study participants,"
+                " no sample sizes",
+    "MedLine": "research abstract prose: past tense, participants or patients, a sample"
+               " size or percentage where detail is called for, hedged conclusions",
+}
+
+SCENES = {
+    "DrugBank": ["these are used in the same area of treatment",
+                 "these are the options for the same indication",
+                 "these appear in the same treatment pathway"],
+    "MedLine": ["these were compared in the same study",
+                "these were given at different points in the patient's care",
+                "these were the treatments recorded for this patient",
+                "these were the options available for the same indication"],
+}
+
+# other drug names falling between the interacting pair. Real positives have a median
+# token gap of 10 and p90 of 57; separation is the controllable proxy, since in a
+# multi-drug sentence you cannot set one pair's distance independently of the rest.
+SEPARATION = {0: 0.40, 1: 0.35, 2: 0.25}
+
 
 def _pick(dist, rng):
-    ks = list(dist); return rng.choices(ks, weights=[dist[k] for k in ks], k=1)[0]
+    ks = list(dist)
+    return rng.choices(ks, weights=[dist[k] for k in ks], k=1)[0]
 
-def make_vignette_specs(n, vocab, seed=0, label_dist=None, pool_size=None,
-                        registers=None, n_targets=(1, 2)):
-    label_dist = label_dist or {l: 1/len(LABELS) for l in LABELS}
-    pool_size  = pool_size or DEFAULT_POOL_SIZE
-    registers  = registers or {"DrugBank": 0.5, "MedLine": 0.5}
+
+def _sample_style(register, label, rng):
+    """Axes filtered against register, scope, and whether anything is asserted."""
+    pool = list(AXES) if label else list(NO_ASSERT_AXES)
+    chosen = rng.sample(pool, min(_pick(N_AXES, rng), len(pool)))
+    style = {}
+    for ax in chosen:
+        banned = set(REGISTER_BANS.get(register, {}).get(ax, set()))
+        banned |= set((LABEL_BANS[label] if label else NO_ASSERT_BANS).get(ax, set()))
+        options = [o for o in (NO_ASSERT_SUBJECTS if (ax == "subject" and not label)
+                               else AXES[ax]) if o not in banned]
+        if options:
+            style[ax] = rng.choice(options)
+    return style
+
+
+def _content(label, rng):
+    """Symbolic content for one asserted interaction. Values are slot aliases, never
+    clauses. INT carries only its scope, which the system prompt explains."""
+    if label == "MECHANISM":
+        site = rng.choice(list(SITES))
+        return {"site": rng.choice(SITES[site]), "exposure": rng.choice(EXPOSURE),
+                "_slots": {"site": site}}
+    if label == "EFFECT":
+        outcome = rng.choice(list(OUTCOMES))
+        return {"outcome": rng.choice(OUTCOMES[outcome]),
+                "extent": rng.choice(VALENCE), "_slots": {"outcome": outcome}}
+    if label == "ADVISE":
+        action = rng.choice(list(ACTIONS))
+        return {"action": rng.choice(ACTIONS[action]), "_slots": {"action": action}}
+    return {"_slots": {}}
+
+
+def _assign_roles(roled, by_key, has_group, rng):
+    """One role each, no repeated role text within a sentence: two drugs both described
+    as 'treating an unrelated condition' reads as a template rather than a scene."""
+    roles, used_role, used_text = {}, set(), set()
+    for key in roled:
+        grp = _pick(ROLE_GROUP_DIST, rng)
+        candidates = [r for r, (g, _) in ROLES.items()
+                      if g == grp and r not in used_role]
+        # class membership only makes sense for a drug when a class is present, and
+        # never for the class itself
+        if not (has_group and by_key[key]["type"] == "DRUG"):
+            candidates = [r for r in candidates if r != "class_member"]
+        if not candidates:
+            candidates = [r for r in ROLES if r not in used_role and r != "class_member"]
+        if not candidates:
+            break
+        role = rng.choice(candidates)
+        texts = [t for t in ROLES[role][1] if t not in used_text] or ROLES[role][1]
+        text = rng.choice(texts)
+        used_role.add(role)
+        used_text.add(text)
+        roles[key] = {"role": role, "group": ROLES[role][0], "text": text}
+    return roles
+
+
+def make_v14_specs(n, vocab, seed=0, composition="prior"):
+    """One spec per sentence. The label is decided here and never named to the model.
+
+    vocab.sample(k, rng) returns k names and chooses groups with probability p_group;
+    there is no typed sampling and no BRAND or DRUG_N in the vocabulary, so 14% of real
+    entity types cannot be matched. Recorded rather than faked.
+    """
+    cfg = COMPOSITION[composition]
+    group_set = set(vocab.groups)
     rng = random.Random(seed)
     specs = []
-    for _ in range(n):
-        register = _pick(registers, rng)
-        k = _pick(pool_size, rng)
-        pool = vocab.sample(k, rng)
-        n_t = min(rng.randint(*n_targets), max(1, k - 1))
+
+    for i in range(n):
+        register = _pick(cfg["registers"], rng)
+        k = _pick(cfg["n_entities"], rng)
+
+        surfaces, seen = [], set()
+        for _ in range(80):
+            if len(surfaces) == k:
+                break
+            cand = vocab.sample(1, rng)[0]
+            low = cand.lower()
+            # a name containing another name breaks span resolution downstream
+            if low in seen or any(low in s or s in low for s in seen):
+                continue
+            seen.add(low)
+            surfaces.append(cand)
+        if len(surfaces) < k:
+            raise RuntimeError("vocab exhausted while sampling distinct names")
+
+        ents = [{"key": chr(65 + j), "surface": s,
+                 "type": "GROUP" if s in group_set else "DRUG"}
+                for j, s in enumerate(surfaces)]
+        keys = [e["key"] for e in ents]
+        by_key = {e["key"]: e for e in ents}
+        pairs = list(itertools.combinations(keys, 2))
+
+        max_pos = min(len(pairs), 2)
+        n_pos = _pick({p: w for p, w in cfg["n_positives"].items() if p <= max_pos}, rng)
+
+        positives = []
+        if n_pos >= 1:
+            positives.append(rng.choice(pairs))
+        if n_pos >= 2:
+            hub = rng.choice(positives[0])
+            others = [p for p in pairs if hub in p and p not in positives]
+            if others:
+                positives.append(rng.choice(others))
+
+        # two asserts share a label and their content slot: they come off one hub in one
+        # sentence, so a single scope and style block is honest rather than a compromise
+        label = _pick(cfg["labels"], rng) if positives else None
+        content = _content(label, rng) if positives else None
+
+        asserts = []
+        for a, b in positives:
+            sep = None
+            if k >= 3:
+                sep = _pick({s: w for s, w in SEPARATION.items() if s <= k - 2}, rng)
+            asserts.append({"between": [a, b], "label": label,
+                            "content": content, "separation": sep})
+
+        style = _sample_style(register, label, rng)
+
+        participating = {x for p in positives for x in p}
+        non_participants = [e["key"] for e in ents if e["key"] not in participating]
+        roled = rng.sample(non_participants, min(len(non_participants), 2))
+        has_group = any(e["type"] == "GROUP" for e in ents)
+        roles = _assign_roles(roled, by_key, has_group, rng)
+
+        scene = rng.choice(SCENES[register]) if non_participants else None
+
+        matrix = {f"{a}|{b}": "NONE" for a, b in pairs}
+        for asrt in asserts:
+            a, b = sorted(asrt["between"])
+            matrix[f"{a}|{b}"] = asrt["label"]
+
         specs.append({
+            "spec_index": i,
             "register": register,
-            "framing": rng.choice(FRAMINGS[register]),
-            "drug_pool": pool,
-            "targets": [{"label": _pick(label_dist, rng)} for _ in range(n_t)],
-            "roles": rng.sample(ROLES, min(len(ROLES), max(2, k - n_t))),
+            "entities": ents,
+            "asserts": asserts,
+            "style": style,
+            "roles": roles,
+            "scene": scene,
+            "matrix": matrix,
         })
     return specs
 
-def make_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
-                   reasoning_effort="low", max_output_tokens=3000):
-    def sample_fn(spec):
-        kw = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
-        resp = client.responses.parse(
-            model=model,
-            input=[{"role": "system", "content": VIGNETTE_SYSTEM},
-                   {"role": "user", "content": render_vignette(spec)}],
-            text_format=Generated, temperature=temperature,
-            max_output_tokens=max_output_tokens, **kw)
-        if resp.output_parsed is None:
-            raise ValueError(f"no parsed output (status={getattr(resp,'status','?')})")
-        return resp.output_parsed.model_dump()
-    return sample_fn
 
-def prompt_fingerprint():
-    blob = VIGNETTE_SYSTEM
-    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+def render_v14(spec):
+    """Style renders last: the model should know what it is styling before it is told
+    how. Content, then the other drugs, then style."""
+    by_key = {e["key"]: e for e in spec["entities"]}
+    blocks = [("drugs", [(e["surface"],
+                          "drug class" if e["type"] == "GROUP" else "drug")
+                         for e in spec["entities"]])]
 
-VERIFIER_SYSTEM = """You are an expert biomedical annotator applying the DDI-2013 annotation guidelines. You are shown one sentence with two drug entities marked [E1]...[/E1] and [E2]...[/E2]. Assign the type of drug-drug interaction (DDI) asserted in the sentence between the [E1] drug and the [E2] drug, considering ONLY what the sentence states.
+    for n, asrt in enumerate(spec["asserts"]):
+        a, b = asrt["between"]
+        rows = [("scope", SCOPE[asrt["label"]]),
+                ("agent", by_key[a]["surface"]),
+                ("affected", by_key[b]["surface"])]
+        rows += [(kk, vv) for kk, vv in asrt["content"].items() if kk != "_slots"]
+        if asrt["separation"] is not None:
+            rows.append(("other drug names between them", str(asrt["separation"])))
+        head = "statement" if len(spec["asserts"]) == 1 else f"statement {n + 1}"
+        blocks.append((head, rows))
 
-A DDI is a change in the effects of one drug by the presence of another drug. Annotate the relationship between the two marked entities only. Interactions are annotated at sentence level: information in other sentences is irrelevant.
+    if spec["roles"]:
+        blocks.append(("other drugs",
+                       [(by_key[k]["surface"], v["text"])
+                        for k, v in spec["roles"].items()]))
+    if spec["style"]:
+        blocks.append(("style", list(spec["style"].items())))
 
-LABELS
+    lines = [REGISTER_LINE[spec["register"]]]
+    if spec["scene"]:
+        lines.append(spec["scene"])
+    lines.append("")
+    for head, rows in blocks:
+        lines.append(head)
+        width = max((len(k) for k, _ in rows), default=0)
+        lines += [f"  {k.ljust(width)}  {v}" for k, v in rows]
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
-MECHANISM — assigned when a PHARMACOKINETIC mechanism is described: a change in how a drug is absorbed, distributed, metabolized or excreted, or a change in its levels or concentration. This includes volume of distribution, bioavailability, peak level, AUC, clearance and half-life.
-  - "Grepafloxacin, like other quinolones, may inhibit the metabolism of caffeine." -> MECHANISM
-  - "probenecid increased the AUC by 25 percent and reduced the plasma and renal clearances." -> MECHANISM
-  - "Elevated plasma levels of theophylline have been reported with concomitant quinolone use." -> MECHANISM
 
-EFFECT — assigned when the sentence describes the EFFECT of the interaction: a pharmacological effect, a clinical finding, a sign or symptom, an increase in toxicity, a protective effect, therapeutic failure, or an unspecified modification of one drug's effect. ALSO assigned when the sentence describes a PHARMACODYNAMIC mechanism (synergistic/additive/potentiated, or antagonistic).
-  - "The concomitant administration of ciprofloxacin with glyburide has resulted in severe hypoglycemia." -> EFFECT
-  - "Quinolones may enhance the effects of the oral anticoagulant, warfarin." -> EFFECT
-  - "Antagonism has been demonstrated between clindamycin and erythromycin in vitro." -> EFFECT (pharmacodynamic)
-  - "Methionine may protect against the ototoxic effects of gentamicin." -> EFFECT (protective)
+def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+                       reasoning_effort="high", max_output_tokens=4000,
+                       api="responses"):
+    """Returns {sentence}. Nothing else: the label lives in the spec, and asking for it
+    back would put label vocabulary into the prompt.
 
-ADVISE — assigned when a recommendation or advice about the concomitant use of the two drugs is given.
-  - "UROXATRAL should not be used in combination with other alpha-blockers." -> ADVISE
-  - "DISULFIRAM should be used with caution in those patients receiving PHENYTOIN." -> ADVISE
-
-INT — assigned when the sentence states that an interaction occurs but gives NO information about its effect, mechanism, or any advice, so none of the other three types can apply. Often appears in abstract titles.
-  - "The interaction of omeprazole and ketoconazole has been established." -> INT
-  - "linezolid has the potential for interaction with adrenergic and serotonergic agents." -> INT
-
-NONE — assigned when the sentence asserts NO annotatable interaction between the two MARKED drugs. This is the default: if the sentence does not assert an interaction between [E1] and [E2] that fits one of the four types above, the answer is NONE. Assign NONE when:
-  - The two marked drugs are merely co-mentioned, co-listed, or co-administered, with no interaction asserted between THEM (e.g. one is a background co-medication, or both appear in a list of a third drug's interactions).
-  - The asserted interaction is between one marked drug and some OTHER drug/class in the sentence, not between [E1] and [E2].
-  - The interaction is NEGATED — stated not to occur or not to alter pharmacokinetics (§4.5.1). "The pharmacokinetics of CANCIDAS are not altered by itraconazole." -> NONE
-  - The sentence only states that an interaction was STUDIED/investigated, without confirming it occurs (§4.5.5). "The interaction of prostaglandin F2alpha and oxytocin was studied in vitro." -> NONE
-  - The sentence describes interference with a LABORATORY TEST, not a drug-drug interaction.
-
-RULES
-- Annotate certainty-independently: a possible/suggested/in-vitro interaction IS annotated if it is asserted to occur (§4.5.2).
-- Annotate beneficial and harmful interactions alike (§4.5.3).
-- If an interaction is affirmed, annotate it even if a negation also appears for the same pair in the sentence (§4.5.4). "Although this interaction has not been reported with cinoxacin, caution should be exercised when cinoxacin is given with caffeine." -> ADVISE
-- TIE-BREAK when more than one type could fit: a pharmacokinetic description is MECHANISM; a pharmacodynamic description is EFFECT. If advice AND an effect/mechanism both appear, prefer the type that the sentence most specifically asserts about the pair.
-
-Return JSON: {label, justification} — justification one clause, quoting the span of text that determines the label.
-"""
-
-def make_verifier(client, model="gpt-oss-120b", temperature=0,
-                   reasoning_effort=None, max_output_tokens=3000):
+    api="chat" falls back to chat.completions, which every vLLM worker serves. The
+    Responses route is worker-specific and 404s on some models.
+    """
     from pydantic import BaseModel
-    from typing import Literal
 
-    class Verdict(BaseModel):
-        label: Literal["NONE","ADVISE","EFFECT","INT","MECHANISM"]
-        justification: str   # one clause, cite the span that decides it
-        
-    def sample_fn(spec):
-        kwargs = {}
-        if reasoning_effort:
-            kwargs["reasoning"] = {"effort": reasoning_effort}
-        resp = client.responses.parse(
-            model=model,
-            input=[{"role": "system", "content": VERIFIER_SYSTEM},
-                   {"role": "user", "content": spec["text"]}],
-            text_format=Verdict,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,   # hard stop on repetition loops
-            **kwargs,
-        )
-        parsed = resp.output_parsed
-        if parsed is None:                      # refusal, truncation, or parse failure
-            raise ValueError(f"no parsed output (status={getattr(resp, 'status', '?')})")
-        return parsed.model_dump()
+    class Written(BaseModel):
+        sentence: str
 
-    return sample_fn
-
-CONEG_SYSTEM = """You are writing short clinical passages that list several medications a patient is taking concurrently, to serve as synthetic training data.
-
-You are given a document framing and a pool of drugs. Write a 1-3 sentence passage that mentions ALL of these drugs together as part of a shared medication regimen. Group several drugs per sentence.
-
-Example: "The patient's regimen included metformin, ramipril, and atorvastatin for diabetes, hypertension, and cardiovascular risk respectively, alongside amoxicillin for a concurrent infection."
-
-RULES
-- Every drug in the pool must appear in the text, grouped naturally with others.
-- You MUST list every drug you write, in the `entities` field, copying each name exactly as it appears in the text. The entities field must never be empty.
-- Describe the drugs only as co-administered. Do not describe any drug as affecting or interacting with another, and do not write "no interaction" or similar. Because no interactions are described, each sentence's `relations` field will be an empty list -- but `entities` must still contain every drug.
-
-Plain ASCII prose, no markdown."""
-
-
-def render_coneg(spec):
-    lines = [f"Write {spec['framing']}.", "",
-             "Mention all of these drugs together as concurrent, non-interacting medications:"]
-    lines += [f"  - {d}" for d in spec["drug_pool"]]
-    lines += ["", "Group several per sentence. Assert NO interactions between any of them."]
-    return "\n".join(lines)
-
-def make_coneg_specs(n, vocab, seed=1, pool_size=None, registers=None):
-    pool_size = pool_size or {4: 0.3, 5: 0.4, 6: 0.3}   # bigger pools -> more NONE pairs
-    registers = registers or {"DrugBank": 0.5, "MedLine": 0.5}
-    rng = random.Random(seed)
-    specs = []
-    for _ in range(n):
-        register = _pick(registers, rng)
-        k = _pick(pool_size, rng)
-        specs.append({"register": register,
-                      "framing": rng.choice(FRAMINGS[register]),
-                      "drug_pool": vocab.sample(k, rng)})
-    return specs
-
-def make_coneg_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
-                         reasoning_effort="low", max_output_tokens=4000):
-    def sample_fn(spec):
+    def _responses(user):
         kw = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
         resp = client.responses.parse(
             model=model,
-            input=[{"role": "system", "content": CONEG_SYSTEM},
-                   {"role": "user", "content": render_coneg(spec)}],
-            text_format=Generated, temperature=temperature,
+            input=[{"role": "system", "content": SYSTEM},
+                   {"role": "user", "content": user}],
+            text_format=Written, temperature=temperature,
             max_output_tokens=max_output_tokens, **kw)
         if resp.output_parsed is None:
-            raise ValueError(f"no parsed output (status={getattr(resp,'status','?')})")
-        return resp.output_parsed.model_dump()
+            raise ValueError(f"no parsed output (status={getattr(resp, 'status', '?')})")
+        return resp.output_parsed.sentence
+
+    def _chat(user):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": SYSTEM},
+                      {"role": "user", "content": user}],
+            temperature=temperature, max_tokens=max_output_tokens,
+            response_format={"type": "json_schema", "json_schema": {
+                "name": "written", "strict": True,
+                "schema": {"type": "object", "additionalProperties": False,
+                           "required": ["sentence"],
+                           "properties": {"sentence": {"type": "string"}}}}})
+        return Written.model_validate_json(resp.choices[0].message.content).sentence
+
+    def sample_fn(spec):
+        user = render_v14(spec)
+        return {"sentence": (_responses if api == "responses" else _chat)(user)}
+
     return sample_fn
+
+
+def v14_fingerprint():
+    parts = [SYSTEM] + sorted(SCOPE.values())
+    parts += sorted(a for v in SITES.values() for a in v)
+    parts += sorted(a for v in OUTCOMES.values() for a in v)
+    parts += sorted(a for v in ACTIONS.values() for a in v)
+    parts += sorted(a for _, v in ROLES.values() for a in v)
+    parts += sorted(a for v in AXES.values() for a in v)
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
