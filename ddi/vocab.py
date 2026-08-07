@@ -1,3 +1,4 @@
+import json
 import csv, random, unicodedata, hashlib, re
 from pathlib import Path
 
@@ -39,6 +40,7 @@ def _is_bad_group(name):
 
 def _is_bad_drug(name):
     if _is_bad_name(name): return True
+    if " and " in name.lower(): return True
     if len(name.split()) > 4: return True
     if "," in name or _ADMIN.search(name) or _NONDRUG.search(name): return True
     return False
@@ -113,7 +115,17 @@ def _load_atc(path):
                 if not _is_bad_group(clean): groups.append(clean)
     return drugs, groups
 
-def build_vocab(p_group=0.3):
+FILTERED = OTHER / "vocab_filtered.json"
+
+def build_vocab(p_group=0.3, filtered=False):
+    """filtered=True loads the LLM-curated lexicon. The unfiltered path stays as a
+    one-line ablation: 'curated lexicon vs raw DrugBank+ATC' is a real arm."""
+    if filtered:
+        if not FILTERED.exists():
+            raise FileNotFoundError(f"{FILTERED} missing; run scripts/filter_vocab_llm.py")
+        d = json.loads(FILTERED.read_text())
+        return Vocab(d["drugs"], d["groups"], sources=["drugbank", "atc", "llm-filtered"],
+                     p_group=p_group)
     db = _load_drugbank(OTHER / "DrugBank.csv")
     atc_d, atc_g = _load_atc(OTHER / "WHO-ATC-DDD.csv")
     return Vocab(db + atc_d, atc_g, sources=["drugbank", "atc"], p_group=p_group)

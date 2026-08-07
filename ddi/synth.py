@@ -286,7 +286,8 @@ def generate_raw(specs, sample_fn, gen_id, max_workers=64, resume=True):
 
 
 def build_dataset_from_raw(gen_id, generator, vocab_source=None,
-                           negative_strategy=None, seed=None, notes="", mode="markers"):
+                           negative_strategy=None, seed=None, notes="",
+                           resolver=None, mode="markers"):
     """Deterministic: raw model output -> instances -> manifested dataset.
 
     Free to re-run whenever the resolver or pair logic changes. Returns
@@ -306,7 +307,11 @@ def build_dataset_from_raw(gen_id, generator, vocab_source=None,
         sent_id = f"synth:{gen_id}:{rec['spec_index']}"
         register = (rec.get("spec") or {}).get("register", "synthetic")
         try:
-            instances.extend(sample_to_instances(rec["sample"], sent_id, register=register, mode=mode))
+            if resolver is None:
+                instances.extend(sample_to_instances(rec["sample"], sent_id, register=register, mode=mode))
+            else:
+                instances.extend(resolver(rec["sample"], sent_id, register=register,
+                                          spec=rec["spec"], mode=mode))
         except Rejected as e:
             rejects.append({"spec_index": rec["spec_index"], "reason": str(e),
                             "sample": rec["sample"]})

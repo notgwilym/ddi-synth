@@ -1,0 +1,31 @@
+{
+  "dataset_id": "20260730-162944-a78393",
+  "created_at": "2026-07-30T16:29:44",
+  "provenance": "synthetic:v13-devcomp+coneg",
+  "generator": {
+    "note": "dev positive composition, NONE 0.85",
+    "prompt_sha": "903006b69dec"
+  },
+  "vocab_source": null,
+  "negative_strategy": null,
+  "parent_id": "20260727-121745-bafaa8",
+  "render_mode": "markers",
+  "seed": 0,
+  "size": {
+    "n_instances": 19051,
+    "n_sentences": 6207
+  },
+  "label_distribution": {
+    "NONE": 16191,
+    "EFFECT": 1092,
+    "MECHANISM": 1039,
+    "ADVISE": 628,
+    "INT": 101
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "59024b1bff0d74271538462ec882773810ea6489da807e48e2b2bc5107afba2e",
+  "leakage_report": null,
+  "git_sha": "6a91967ea7e4f58566f0a74226cc551b52e60e64",
+  "git_dirty": false,
+  "notes": "markers, overlap-aligned, from 20260727-121745-bafaa8. "
+}

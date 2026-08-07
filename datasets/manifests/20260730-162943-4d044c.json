@@ -1,0 +1,28 @@
+{
+  "dataset_id": "20260730-162943-4d044c",
+  "created_at": "2026-07-30T16:29:44",
+  "provenance": "human:train",
+  "generator": null,
+  "vocab_source": null,
+  "negative_strategy": null,
+  "parent_id": null,
+  "render_mode": "markers",
+  "seed": 42,
+  "size": {
+    "n_instances": 26785,
+    "n_sentences": 2429
+  },
+  "label_distribution": {
+    "MECHANISM": 743,
+    "NONE": 24212,
+    "EFFECT": 1132,
+    "ADVISE": 541,
+    "INT": 157
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "eb4d5a05320d81380c05c6bbc51314d5ddc12909c6015122b6a140f3cc6c1479",
+  "leakage_report": null,
+  "git_sha": "6a91967ea7e4f58566f0a74226cc551b52e60e64",
+  "git_dirty": false,
+  "notes": "full human train, markers"
+}

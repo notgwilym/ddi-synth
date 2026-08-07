@@ -1,0 +1,28 @@
+{
+  "dataset_id": "20260730-162944-0fdc9a",
+  "created_at": "2026-07-30T16:29:44",
+  "provenance": "human:train",
+  "generator": null,
+  "vocab_source": null,
+  "negative_strategy": null,
+  "parent_id": "20260730-162943-4d044c",
+  "render_mode": "markers",
+  "seed": 42,
+  "size": {
+    "n_instances": 26748,
+    "n_sentences": 2424
+  },
+  "label_distribution": {
+    "MECHANISM": 743,
+    "NONE": 24177,
+    "EFFECT": 1132,
+    "ADVISE": 539,
+    "INT": 157
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "4294b8222a10148e015253e7b981eb30b42932bd81ac224a93b8f5326723c491",
+  "leakage_report": null,
+  "git_sha": "6a91967ea7e4f58566f0a74226cc551b52e60e64",
+  "git_dirty": false,
+  "notes": "markers, overlap-aligned, from 20260730-162943-4d044c. "
+}

@@ -8,23 +8,26 @@ because pair identity was never a variable. Here every sentence comes from one s
 and one prompt, and zero-assertion specs are drawn from the same distribution, so no
 structural property can separate the classes.
 
-Two things about the prompt that are easy to get wrong, and were:
+Four things about the prompt that are easy to get wrong, and were:
 
 The label NAME must not reach the model: v13 wrote "a clear MECHANISM interaction" into
 sentences. The label CRITERIA must reach it, or a spec describing a change in exposure
 can produce a sentence an annotator would read as a clinical effect, and the gold label
-is then wrong. Those are separable, and the system prompt carries the criteria as kinds
-of statement with worked examples on placeholder names.
+is then wrong.
 
-Nothing in a spec is a phrase that can be lifted. Content is slot tokens with a rotated
-alias pool per slot, so the model builds the syntax itself rather than rephrasing a
-clause it was handed.
+Nothing in a spec may be a phrase the model can lift. Content slots are noun phrases
+that legitimately belong in the output, but ROLES are predicates, and written as English
+they were copied straight through. They are opaque tokens, glossed once in the system
+prompt.
 
-Every axis is filtered against register, scope, and whether the spec asserts anything at
-all. An unfiltered axis produces specs the model cannot satisfy: a no-assertion spec
-told to make "the affected drug" the subject, or a recommended-action spec told to make
-plasma concentrations the subject. The model then violates one instruction or the other
-and which one is unpredictable.
+The scene must render on EVERY spec. When it only appeared where non-participants
+existed, scene vocabulary ("regimen", "treatment pathway", "administered") correlated
+almost perfectly with the absence of an assertion, and a bag-of-words probe recovered
+the label from it. That is the v13 shortcut in lexical form.
+
+Where non-participants sit must be sampled. Left free, they landed after the assertion
+96% of the time, so the classifier could learn "second half of the sentence means NONE"
+without reading the markers at all. That is the same shortcut in positional form.
 """
 import hashlib
 import itertools
@@ -38,20 +41,43 @@ LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
 # perform alike, the corpus statistics were a convenience rather than a crutch.
 PRIOR = {
     "n_entities": {2: 0.40, 3: 0.30, 4: 0.20, 5: 0.10},
-    "n_positives": {0: 0.45, 1: 0.40, 2: 0.15},
     "labels": {l: 0.25 for l in LABELS},
     "registers": {"DrugBank": 0.5, "MedLine": 0.5},
 }
 MEASURED = {
     "n_entities": {2: 0.410, 3: 0.272, 4: 0.137, 5: 0.073, 6: 0.040},
-    "n_positives": {0: 0.448, 1: 0.375, 2: 0.086},
     "labels": {"EFFECT": 0.440, "MECHANISM": 0.289, "ADVISE": 0.210, "INT": 0.061},
     "registers": {"DrugBank": 0.85, "MedLine": 0.15},
 }
 COMPOSITION = {"prior": PRIOR, "measured": MEASURED}
 
+N_POSITIVES_BY_K = {
+    2: {0: 0.65, 1: 0.35},
+    3: {0: 0.40, 1: 0.45, 2: 0.15},
+    4: {0: 0.30, 1: 0.45, 2: 0.25},
+    5: {0: 0.25, 1: 0.40, 2: 0.35},
+    6: {0: 0.20, 1: 0.40, 2: 0.40},
+}
 
-SYSTEM = """You write single sentences of biomedical text for a fictional drug interaction dataset. 
+# Keys are opaque: "concurrent" and "subsequent" were being used as adjectives lifted
+# straight from the field ("with concurrent Amedalin, later followed by subsequent
+# Amidephrine"). group records whether the role implies concurrent use: "separated"
+# roles make an interaction semantically unavailable, so the NONE label is safe by
+# construction, while "concurrent" roles are the realistic hard-negative case. Using
+# only the separated ones would trade one shortcut for another.
+ROLES = {
+    "r1": ("separated", "was given earlier and has stopped"),
+    "r2": ("separated", "started after the others ended"),
+    "r3": ("separated", "evaluated separately, for comparison"),
+    "r4": ("separated", "used if the first choice is unsuitable"),
+    "r5": ("separated", "not given, or not permitted"),
+}
+P_ROLE = 0.55
+ROLE_POS = {"before": 0.40, "after": 0.60}
+_ROLE_GLOSS = "\n".join(f"  {k}   {v[1]}" for k, v in ROLES.items())
+
+
+SYSTEM = f"""You write single sentences of biomedical text for a drug interaction corpus.
 
 Each request lists drug names, the content the sentence carries, and a style. Write
 exactly one sentence.
@@ -63,17 +89,18 @@ assertion at all. When it does, the "scope" line says which kind of statement to
 The four kinds are exclusive. Write the one asked for and none of the others: a sentence
 that mixes them cannot be used.
 
-1. Exposure and handling / mechanism. How much of one drug is present, or how the body takes it up,
-   distributes it, breaks it down or removes it, changed by the presence of the other.
-   Say what changes and in which direction. Do not say what happens to the patient as a
-   result.
+1. Exposure and handling / mechanism. How much of one drug is present, or how the body
+   takes it up, distributes it, breaks it down or removes it, changed by the presence of
+   the other. Say what changes and in which direction. Do not say what happens to the
+   patient as a result.
 
-2. Clinical consequence / effect.  What follows for the patient when the two are combined: an
-   effect, a risk, a loss of efficacy. Say what the consequence is. Do not explain the
-   handling or the levels that produce it.
+2. Clinical consequence / effect. What follows for the patient when the two are
+   combined: an effect, a risk, a loss of efficacy. Say what the consequence is. Do not
+   explain the handling or the levels that produce it. The consequence follows from the
+   two being used together; do not compare one drug against the other.
 
-3. Recommended action / advice. What a prescriber should do about the combination. Say what
-   should be done. Do not state the consequence or the mechanism motivating it.
+3. Recommended action / advice. What a prescriber should do about the combination. Say
+   what should be done. Do not state the consequence or the mechanism motivating it.
 
 4. Bare interaction. That the two interact, and nothing further. No mechanism, no
    consequence, no advice, no figures.
@@ -82,25 +109,40 @@ Only the pair named in the statement block is being asserted about. Other drugs 
 list are present in the sentence but nothing is claimed between them, or between them
 and the pair.
 
+When two statements are given they share a drug. Write them as one coordinated
+statement rather than repeating the same clause twice.
+
 WHEN NO ASSERTION IS ASKED FOR
 
 Some requests have no statement block. Write ordinary clinical or research prose that
-places every listed drug in the situation described at the top: a regimen, a comparison,
-a sequence of treatments. Nothing in the sentence says that any drug affects any other.
+places every listed drug in the situation described at the top. Nothing in the sentence
+says that any drug affects any other. Write it as one connected scene, not as a list of
+drugs each with its own clause.
+
+OTHER DRUGS
+
+Names under "other drugs" carry a code saying what part they play. The code is a
+category, not a word to use: work the part into the sentence in your own words. A drug
+marked r1 might appear as "previously treated with", "after discontinuing", or "who had
+received".
+
+{_ROLE_GLOSS}
 
 RULES
 
 - Use every drug name listed, and no others.
 - Reproduce each name as given, including any punctuation or non-ASCII characters in it.
 - Every drug you name must be doing something in the sentence.
-- Do not worry about whether the drugs are actually used together in practice: the sentence is a fiction.
-- The sentence should read as plausible clinical or research prose.
+- The drugs listed may not be combined in real practice. Write the sentence as specified.
+- Write only prose. The field names and codes in the request are instructions to you,
+  not words to put in the sentence.
+- Vary how the sentence opens. Do not begin every sentence the same way.
+- Keep it to one clause or two, about the length of a single sentence in a drug label or
+  an abstract.
 - Match verb agreement to the name; some names are plural.
 - One sentence. No markdown."""
 
 
-# The scope line is what stops a spec producing a sentence an annotator would read as a
-# different class. It names the kind without naming the label.
 SCOPE = {
     "MECHANISM": "exposure and handling only, no clinical consequence",
     "EFFECT": "clinical consequence only, no explanation of handling or levels",
@@ -110,10 +152,6 @@ SCOPE = {
 
 
 # ---------------------------------------------------------------- content slots
-# Each slot is a token with a small alias pool; one alias is drawn per call, so the
-# lexical surface rotates while the semantics hold. Aliases are noun phrases, never
-# clauses: the model supplies every verb.
-
 SITES = {
     "hepatic_metabolism": ["hepatic metabolism", "CYP-mediated metabolism",
                            "oxidative metabolism", "liver enzyme activity",
@@ -130,7 +168,9 @@ SITES = {
 }
 EXPOSURE = ["higher", "lower"]
 
-OUTCOMES = {
+# "reduced" is deliberately absent: pairing a toxicity with a reduction produces a
+# sentence asserting that one drug protects against the other's harm.
+HARMS = {
     "bleeding": ["bleeding", "haemorrhage", "bleeding risk"],
     "sedation": ["sedation", "drowsiness", "central nervous system depression"],
     "hypotension": ["hypotension", "a drop in blood pressure"],
@@ -142,9 +182,12 @@ OUTCOMES = {
     "seizures": ["seizures", "convulsions", "a lowered seizure threshold"],
     "respiratory_depression": ["respiratory depression", "slowed breathing"],
     "qt": ["QT prolongation", "prolongation of the QT interval"],
-    "loss_of_efficacy": ["loss of therapeutic effect", "reduced efficacy"],
 }
-VALENCE = ["greater", "reduced", "new"]
+HARM_EXTENT = ["greater", "new"]
+
+EFFICACY = {"loss_of_efficacy": ["therapeutic effect", "clinical efficacy",
+                                 "the intended response"]}
+EFFICACY_EXTENT = ["reduced", "lost"]
 
 ACTIONS = {
     "avoid": ["avoidance of the combination", "contraindication"],
@@ -155,34 +198,10 @@ ACTIONS = {
     "discontinuation": ["discontinuation before the other is started",
                         "withdrawal of one agent"],
 }
-
-# Non-participant roles. group records whether the role implies concurrent use.
-# "separated" roles make an interaction semantically unavailable, so the label is safe
-# by construction. "concurrent" roles are the realistic hard-negative case. Keeping only
-# the separated ones would trade the composition shortcut for a lexical one.
-ROLES = {
-    "prior_therapy": ("separated", ["given earlier and since stopped",
-                                    "the previous treatment"]),
-    "subsequent": ("separated", ["started after the others were withdrawn",
-                                 "the treatment that followed"]),
-    "comparator": ("separated", ["evaluated in a separate arm",
-                                 "the comparator agent"]),
-    "alternative": ("separated", ["used instead when the first choice is unsuitable",
-                                  "the substitute option"]),
-    "not_enrolled": ("separated", ["excluded from the study population",
-                                   "not permitted during the study"]),
-    "concomitant": ("concurrent", ["part of the same regimen",
-                                   "taken at the same time"]),
-    "background": ("concurrent", ["treating an unrelated condition",
-                                  "the patient's other ongoing medication"]),
-}
-ROLE_GROUP_DIST = {"separated": 0.45, "concurrent": 0.55}
+P_EFFICACY = 0.2
 
 
 # ---------------------------------------------------------------- realisation
-# One or two axes per call. Six instructions is more than the model holds at once, and
-# each is another chance to leave a visible seam.
-
 AXES = {
     "subject": ["the agent drug", "the affected drug", "the combination",
                 "plasma concentrations", "the patients", "the study"],
@@ -191,20 +210,26 @@ AXES = {
     "detail": ["no figures", "direction only", "one figure",
                "a pharmacokinetic figure"],
     "position": ["main clause", "subordinate clause", "relative clause"],
+    # 112 of ~150 MedLine sentences opened with "in a/the cohort/study". The register
+    # line was supplying a fixed frame, so the opening is now drawn explicitly.
+    "opening": ["with a drug name", "with the finding", "with a condition or setting",
+                "with a subordinate clause", "with the recommendation"],
 }
 N_AXES = {1: 0.45, 2: 0.55}
 
-# DrugBank product labels have no participants and no statistics; MedLine abstracts do.
+LENGTH = {"short": 0.35, "medium": 0.40, "long": 0.25}
+LENGTH_TEXT = {
+    "short": "a single clause",
+    "medium": "one clause with a subordinate clause",
+    "long": "two or three clauses, with clinical detail",
+}
+
 REGISTER_BANS = {
     "DrugBank": {"subject": {"the patients", "the study"},
                  "certainty": {"a single case"},
                  "detail": {"a pharmacokinetic figure"}},
     "MedLine": {},
 }
-
-# Each scope forbids the axis values that contradict it. Without these the spec asks the
-# model to write a recommendation whose subject is a plasma concentration, or a bare
-# interaction with a stated direction.
 LABEL_BANS = {
     "MECHANISM": {},
     "EFFECT": {"subject": {"plasma concentrations"},
@@ -217,12 +242,10 @@ LABEL_BANS = {
             "position": {"relative clause"}},
 }
 
-# With no statement there is no agent, no affected, no clause to position and no detail
-# to give. Only voice, certainty, and the subjects that exist without an assertion.
-NO_ASSERT_AXES = ["voice", "certainty", "subject"]
-NO_ASSERT_SUBJECTS = ["one of the drugs listed", "the treatment", "the regimen"]
-NO_ASSERT_BANS = {"subject": {"the agent drug", "the affected drug",
-                              "plasma concentrations", "the combination"}}
+NO_ASSERT_AXES = ["voice", "certainty", "subject", "opening"]
+NO_ASSERT_SUBJECTS = ["one of the drugs listed", "the treatment", "the regimen",
+                      "the patients"]
+NO_ASSERT_BANS = {"subject": {"the patients"}}
 
 REGISTER_LINE = {
     "DrugBank": "product label prose: impersonal, present tense, no study participants,"
@@ -231,20 +254,18 @@ REGISTER_LINE = {
                " size or percentage where detail is called for, hedged conclusions",
 }
 
+# Rendered on EVERY spec. Confined to specs with non-participants, scene vocabulary was
+# a near-perfect predictor of the absence of an assertion.
 SCENES = {
-    "DrugBank": ["these are used in the same area of treatment",
-                 "these are the options for the same indication",
-                 "these appear in the same treatment pathway"],
-    "MedLine": ["these were compared in the same study",
-                "these were given at different points in the patient's care",
-                "these were the treatments recorded for this patient",
-                "these were the options available for the same indication"],
+    "DrugBank": ["used in the same area of treatment",
+                 "options for the same indication",
+                 "part of the same treatment pathway",
+                 "listed together on the same label"],
+    "MedLine": ["compared in the same study",
+                "given at different points in the patient's care",
+                "the treatments recorded for this patient",
+                "the options available for the same indication"],
 }
-
-# other drug names falling between the interacting pair. Real positives have a median
-# token gap of 10 and p90 of 57; separation is the controllable proxy, since in a
-# multi-drug sentence you cannot set one pair's distance independently of the rest.
-SEPARATION = {0: 0.40, 1: 0.35, 2: 0.25}
 
 
 def _pick(dist, rng):
@@ -256,56 +277,53 @@ def _sample_style(register, label, rng):
     """Axes filtered against register, scope, and whether anything is asserted."""
     pool = list(AXES) if label else list(NO_ASSERT_AXES)
     chosen = rng.sample(pool, min(_pick(N_AXES, rng), len(pool)))
+    if "opening" not in chosen:
+        chosen.append("opening")
     style = {}
+    length = _pick(LENGTH, rng)
+    style["length"] = LENGTH_TEXT[length]
     for ax in chosen:
+        base = AXES[ax] if (label or ax != "subject") else NO_ASSERT_SUBJECTS
         banned = set(REGISTER_BANS.get(register, {}).get(ax, set()))
         banned |= set((LABEL_BANS[label] if label else NO_ASSERT_BANS).get(ax, set()))
-        options = [o for o in (NO_ASSERT_SUBJECTS if (ax == "subject" and not label)
-                               else AXES[ax]) if o not in banned]
+        options = [o for o in base if o not in banned]
         if options:
             style[ax] = rng.choice(options)
     return style
 
 
 def _content(label, rng):
-    """Symbolic content for one asserted interaction. Values are slot aliases, never
-    clauses. INT carries only its scope, which the system prompt explains."""
     if label == "MECHANISM":
         site = rng.choice(list(SITES))
         return {"site": rng.choice(SITES[site]), "exposure": rng.choice(EXPOSURE),
                 "_slots": {"site": site}}
     if label == "EFFECT":
-        outcome = rng.choice(list(OUTCOMES))
-        return {"outcome": rng.choice(OUTCOMES[outcome]),
-                "extent": rng.choice(VALENCE), "_slots": {"outcome": outcome}}
+        if rng.random() < P_EFFICACY:
+            slot = "loss_of_efficacy"
+            return {"outcome": rng.choice(EFFICACY[slot]),
+                    "extent": rng.choice(EFFICACY_EXTENT),
+                    "relative to": "the affected drug given alone",
+                    "_slots": {"outcome": slot}}
+        slot = rng.choice(list(HARMS))
+        return {"outcome": rng.choice(HARMS[slot]),
+                "extent": rng.choice(HARM_EXTENT),
+                "relative to": "either drug given alone",
+                "_slots": {"outcome": slot}}
     if label == "ADVISE":
         action = rng.choice(list(ACTIONS))
         return {"action": rng.choice(ACTIONS[action]), "_slots": {"action": action}}
     return {"_slots": {}}
 
 
-def _assign_roles(roled, by_key, has_group, rng):
-    """One role each, no repeated role text within a sentence: two drugs both described
-    as 'treating an unrelated condition' reads as a template rather than a scene."""
-    roles, used_role, used_text = {}, set(), set()
+def _assign_roles(roled, rng):
+    roles, used = {}, set()
     for key in roled:
-        grp = _pick(ROLE_GROUP_DIST, rng)
-        candidates = [r for r, (g, _) in ROLES.items()
-                      if g == grp and r not in used_role]
-        # class membership only makes sense for a drug when a class is present, and
-        # never for the class itself
-        if not (has_group and by_key[key]["type"] == "DRUG"):
-            candidates = [r for r in candidates if r != "class_member"]
-        if not candidates:
-            candidates = [r for r in ROLES if r not in used_role and r != "class_member"]
+        candidates = [r for r in ROLES if r not in used]
         if not candidates:
             break
         role = rng.choice(candidates)
-        texts = [t for t in ROLES[role][1] if t not in used_text] or ROLES[role][1]
-        text = rng.choice(texts)
-        used_role.add(role)
-        used_text.add(text)
-        roles[key] = {"role": role, "group": ROLES[role][0], "text": text}
+        used.add(role)
+        roles[key] = {"role": role, "group": ROLES[role][0]}
     return roles
 
 
@@ -323,11 +341,11 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
 
     for i in range(n):
         register = _pick(cfg["registers"], rng)
-        k = _pick(cfg["n_entities"], rng)
+        key = _pick(cfg["n_entities"], rng)
 
         surfaces, seen = [], set()
         for _ in range(80):
-            if len(surfaces) == k:
+            if len(surfaces) == key:
                 break
             cand = vocab.sample(1, rng)[0]
             low = cand.lower()
@@ -336,7 +354,7 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
                 continue
             seen.add(low)
             surfaces.append(cand)
-        if len(surfaces) < k:
+        if len(surfaces) < key:
             raise RuntimeError("vocab exhausted while sampling distinct names")
 
         ents = [{"key": chr(65 + j), "surface": s,
@@ -346,8 +364,7 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
         by_key = {e["key"]: e for e in ents}
         pairs = list(itertools.combinations(keys, 2))
 
-        max_pos = min(len(pairs), 2)
-        n_pos = _pick({p: w for p, w in cfg["n_positives"].items() if p <= max_pos}, rng)
+        n_pos = _pick(N_POSITIVES_BY_K[key], rng)
 
         positives = []
         if n_pos >= 1:
@@ -358,28 +375,22 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
             if others:
                 positives.append(rng.choice(others))
 
-        # two asserts share a label and their content slot: they come off one hub in one
-        # sentence, so a single scope and style block is honest rather than a compromise
+        # two asserts share label and content: they come off one hub in one sentence, so
+        # a single scope and style block is honest rather than a compromise
         label = _pick(cfg["labels"], rng) if positives else None
         content = _content(label, rng) if positives else None
-
-        asserts = []
-        for a, b in positives:
-            sep = None
-            if k >= 3:
-                sep = _pick({s: w for s, w in SEPARATION.items() if s <= k - 2}, rng)
-            asserts.append({"between": [a, b], "label": label,
-                            "content": content, "separation": sep})
+        asserts = [{"between": [a, b], "label": label, "content": content}
+                   for a, b in positives]
 
         style = _sample_style(register, label, rng)
 
         participating = {x for p in positives for x in p}
         non_participants = [e["key"] for e in ents if e["key"] not in participating]
-        roled = rng.sample(non_participants, min(len(non_participants), 2))
-        has_group = any(e["type"] == "GROUP" for e in ents)
-        roles = _assign_roles(roled, by_key, has_group, rng)
-
-        scene = rng.choice(SCENES[register]) if non_participants else None
+        cap = 2 if positives else max(1, len(non_participants) // 3)
+        candidates = rng.sample(non_participants, min(len(non_participants), cap))
+        roled = [key for key in candidates if rng.random() < P_ROLE]
+        roles = _assign_roles(roled, rng)
+        role_pos = _pick(ROLE_POS, rng) if (roles and asserts) else None
 
         matrix = {f"{a}|{b}": "NONE" for a, b in pairs}
         for asrt in asserts:
@@ -393,19 +404,20 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
             "asserts": asserts,
             "style": style,
             "roles": roles,
-            "scene": scene,
+            "role_pos": role_pos,
+            "scene": rng.choice(SCENES[register]),
             "matrix": matrix,
         })
     return specs
 
 
 def render_v14(spec):
-    """Style renders last: the model should know what it is styling before it is told
-    how. Content, then the other drugs, then style."""
+    """One names block with a count: split drug/class blocks lost a class name in three
+    of three samples, and the inline type marker was written into sentences. Style
+    renders last, so the model knows what it is styling before it is told how."""
     by_key = {e["key"]: e for e in spec["entities"]}
-    blocks = [("drugs", [(e["surface"],
-                          "drug class" if e["type"] == "GROUP" else "drug")
-                         for e in spec["entities"]])]
+    names = [(e["surface"], "") for e in spec["entities"]]
+    blocks = [(f"names to use, all {len(names)}", names)]
 
     for n, asrt in enumerate(spec["asserts"]):
         a, b = asrt["between"]
@@ -413,38 +425,37 @@ def render_v14(spec):
                 ("agent", by_key[a]["surface"]),
                 ("affected", by_key[b]["surface"])]
         rows += [(kk, vv) for kk, vv in asrt["content"].items() if kk != "_slots"]
-        if asrt["separation"] is not None:
-            rows.append(("other drug names between them", str(asrt["separation"])))
         head = "statement" if len(spec["asserts"]) == 1 else f"statement {n + 1}"
         blocks.append((head, rows))
 
     if spec["roles"]:
-        blocks.append(("other drugs",
-                       [(by_key[k]["surface"], v["text"])
-                        for k, v in spec["roles"].items()]))
+        rows = [(by_key[k]["surface"], v["role"]) for k, v in spec["roles"].items()]
+        if spec["role_pos"]:
+            rows.append(("these come", f"{spec['role_pos']} the main statement"))
+        blocks.append(("other drugs", rows))
+
     if spec["style"]:
         blocks.append(("style", list(spec["style"].items())))
 
-    lines = [REGISTER_LINE[spec["register"]]]
-    if spec["scene"]:
-        lines.append(spec["scene"])
-    lines.append("")
+    lines = [REGISTER_LINE[spec["register"]], f"these are {spec['scene']}", ""]
     for head, rows in blocks:
         lines.append(head)
         width = max((len(k) for k, _ in rows), default=0)
-        lines += [f"  {k.ljust(width)}  {v}" for k, v in rows]
+        lines += [f"  {k.ljust(width)}  {v}".rstrip() for k, v in rows]
         lines.append("")
     return "\n".join(lines).rstrip()
 
 
 def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
-                       reasoning_effort="high", max_output_tokens=4000,
+                       reasoning_effort="low", max_output_tokens=1500,
                        api="responses"):
     """Returns {sentence}. Nothing else: the label lives in the spec, and asking for it
     back would put label vocabulary into the prompt.
 
-    api="chat" falls back to chat.completions, which every vLLM worker serves. The
-    Responses route is worker-specific and 404s on some models.
+    Low effort by default. At medium the model spent 300-570 reasoning tokens per call,
+    much of it counting words by hand and restating the register rules; at low it spends
+    ~100 and the sentences are no worse. max_output_tokens bounds a runaway rather than
+    letting it burn the full context, which turns a stall into a fast incomplete.
     """
     from pydantic import BaseModel
 
@@ -452,28 +463,32 @@ def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
         sentence: str
 
     def _responses(user):
-        kw = {"reasoning": {"effort": reasoning_effort}} if reasoning_effort else {}
+        kw = {}
+        if reasoning_effort:
+            kw["reasoning"] = {"effort": reasoning_effort}
+        if max_output_tokens:
+            kw["max_output_tokens"] = max_output_tokens
         resp = client.responses.parse(
             model=model,
             input=[{"role": "system", "content": SYSTEM},
                    {"role": "user", "content": user}],
-            text_format=Written, temperature=temperature,
-            max_output_tokens=max_output_tokens, **kw)
+            text_format=Written, temperature=temperature, **kw)
         if resp.output_parsed is None:
             raise ValueError(f"no parsed output (status={getattr(resp, 'status', '?')})")
         return resp.output_parsed.sentence
 
     def _chat(user):
+        kw = {"max_tokens": max_output_tokens} if max_output_tokens else {}
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": SYSTEM},
                       {"role": "user", "content": user}],
-            temperature=temperature, max_tokens=max_output_tokens,
+            temperature=temperature,
             response_format={"type": "json_schema", "json_schema": {
                 "name": "written", "strict": True,
                 "schema": {"type": "object", "additionalProperties": False,
                            "required": ["sentence"],
-                           "properties": {"sentence": {"type": "string"}}}}})
+                           "properties": {"sentence": {"type": "string"}}}}}, **kw)
         return Written.model_validate_json(resp.choices[0].message.content).sentence
 
     def sample_fn(spec):
@@ -486,8 +501,10 @@ def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
 def v14_fingerprint():
     parts = [SYSTEM] + sorted(SCOPE.values())
     parts += sorted(a for v in SITES.values() for a in v)
-    parts += sorted(a for v in OUTCOMES.values() for a in v)
+    parts += sorted(a for v in HARMS.values() for a in v)
+    parts += sorted(a for v in EFFICACY.values() for a in v)
     parts += sorted(a for v in ACTIONS.values() for a in v)
-    parts += sorted(a for _, v in ROLES.values() for a in v)
+    parts += sorted(ROLES)
     parts += sorted(a for v in AXES.values() for a in v)
+    parts += sorted(s for v in SCENES.values() for s in v)
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
