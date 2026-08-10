@@ -68,7 +68,7 @@ N_POSITIVES_BY_K = {
 ROLES = {
     "r1": ("separated", "was given earlier and has stopped"),
     "r2": ("separated", "started after the others ended"),
-    "r3": ("separated", "evaluated separately, for comparison"),
+    "r3": ("separated", "a comparator"),
     "r4": ("separated", "used if the first choice is unsuitable"),
     "r5": ("separated", "not given, or not permitted"),
 }
@@ -231,15 +231,17 @@ REGISTER_BANS = {
     "MedLine": {},
 }
 LABEL_BANS = {
-    "MECHANISM": {},
+    "MECHANISM": {"opening": {"with the recommendation"}},
     "EFFECT": {"subject": {"plasma concentrations"},
-               "detail": {"a pharmacokinetic figure"}},
+               "detail": {"a pharmacokinetic figure"},
+               "opening": {"with the recommendation"}},
     "ADVISE": {"subject": {"plasma concentrations"},
                "certainty": {"a single case"},
                "detail": {"direction only", "one figure", "a pharmacokinetic figure"}},
     "INT": {"subject": {"plasma concentrations", "the combination"},
             "detail": {"direction only", "one figure", "a pharmacokinetic figure"},
-            "position": {"relative clause"}},
+            "position": {"relative clause"},
+            "opening": {"with the recommendation", "with the finding"}},
 }
 
 NO_ASSERT_AXES = ["voice", "certainty", "subject", "opening"]
@@ -302,12 +304,10 @@ def _content(label, rng):
             slot = "loss_of_efficacy"
             return {"outcome": rng.choice(EFFICACY[slot]),
                     "extent": rng.choice(EFFICACY_EXTENT),
-                    "relative to": "the affected drug given alone",
                     "_slots": {"outcome": slot}}
         slot = rng.choice(list(HARMS))
         return {"outcome": rng.choice(HARMS[slot]),
                 "extent": rng.choice(HARM_EXTENT),
-                "relative to": "either drug given alone",
                 "_slots": {"outcome": slot}}
     if label == "ADVISE":
         action = rng.choice(list(ACTIONS))

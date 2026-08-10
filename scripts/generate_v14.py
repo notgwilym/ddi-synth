@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ddi.vocab import build_vocab
-from ddi.prompt14 import make_v14_specs, make_v14_sample_fn, v14_fingerprint
+from ddi.prompt import make_v14_specs, make_v14_sample_fn, v14_fingerprint
 from ddi.resolve import v14_sample_to_instances, generation_records
 from ddi.synth import generate_raw, build_dataset_from_raw
 from ddi import gates
