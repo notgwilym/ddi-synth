@@ -1,0 +1,45 @@
+{
+  "dataset_id": "20260812-013009-7631b9",
+  "created_at": "2026-08-12T01:30:09",
+  "provenance": "synthetic",
+  "generator": {
+    "prompt_sha": "0436822c1cb6",
+    "p_role": 0.2,
+    "model": "gpt-oss-120b",
+    "reasoning_effort": "low",
+    "note": "P_ROLE ablation against v14-full-2",
+    "gen_id": "v14-lowrole-check"
+  },
+  "vocab_source": {
+    "name": "drugbank+atc",
+    "sources": [
+      "drugbank",
+      "atc"
+    ],
+    "p_group": 0.3,
+    "n_drugs": 14932,
+    "n_groups": 425,
+    "sha256": "089ea59a2351"
+  },
+  "negative_strategy": null,
+  "parent_id": null,
+  "render_mode": "markers",
+  "seed": 0,
+  "size": {
+    "n_instances": 902,
+    "n_sentences": 284
+  },
+  "label_distribution": {
+    "NONE": 708,
+    "MECHANISM": 46,
+    "ADVISE": 47,
+    "EFFECT": 55,
+    "INT": 46
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "48f1f20b729004bb2d55c2abc00383217799fd986b40cda24414536421072c05",
+  "leakage_report": null,
+  "git_sha": "29022bb047a23599fd6ba1b9c21b62057ebdf566",
+  "git_dirty": true,
+  "notes": ""
+}

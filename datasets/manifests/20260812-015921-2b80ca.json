@@ -1,0 +1,47 @@
+{
+  "dataset_id": "20260812-015921-2b80ca",
+  "created_at": "2026-08-12T01:59:21",
+  "provenance": "synthetic",
+  "generator": {
+    "prompt_sha": "0436822c1cb6",
+    "p_role": 0.2,
+    "model": "gpt-oss-120b",
+    "reasoning_effort": "low",
+    "composition": "prior",
+    "n_positives_by_k": "hand-tuned to decorrelate positive rate from entity count; not a corpus measurement",
+    "note": "P_ROLE ablation against v14-full-2",
+    "gen_id": "v14-lowrole-full"
+  },
+  "vocab_source": {
+    "name": "drugbank+atc",
+    "sources": [
+      "drugbank",
+      "atc"
+    ],
+    "p_group": 0.3,
+    "n_drugs": 14932,
+    "n_groups": 425,
+    "sha256": "089ea59a2351"
+  },
+  "negative_strategy": null,
+  "parent_id": null,
+  "render_mode": "markers",
+  "seed": 0,
+  "size": {
+    "n_instances": 19117,
+    "n_sentences": 5638
+  },
+  "label_distribution": {
+    "NONE": 15433,
+    "ADVISE": 967,
+    "MECHANISM": 857,
+    "INT": 940,
+    "EFFECT": 920
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "979c8e032d2418bd1e3e3a0f7b82a312b696b08af9174367d615f8e2af6805b6",
+  "leakage_report": null,
+  "git_sha": "29022bb047a23599fd6ba1b9c21b62057ebdf566",
+  "git_dirty": true,
+  "notes": "v14 with P_ROLE=0.2, 6000 specs"
+}
