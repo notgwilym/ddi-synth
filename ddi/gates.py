@@ -17,12 +17,28 @@ import re
 from collections import Counter, defaultdict
 
 
+# Derived, not invented. Corpus values measured on the filtered human train split
+# (2421 sentences, 15225 instances, eight enumeration sentences removed). Margins are
+# 3 * sd of the corpus estimator at n=500 sentences, which is roughly the annotation
+# budget the mixing curve says is worth having.
+#
+#   measurement          corpus   sd@500   threshold
+#   hard negative rate    0.502    0.038   >= 0.39
+#   count-rule F1         0.281    0.022   <= 0.35
+#   probe lift            0.135    0.030   <= 0.23
+#   role adjacency gap   -0.009    0.007   <= 0.02
+#
+# The first three were previously 0.30, 0.21 and 0.15. The role gap is new: it is the
+# largest divergence v14 exhibits (+0.235 against a corpus -0.009) and no gate measured
+# it, which is the argument for framing these as corpus divergences rather than
+# standalone checks.
 THRESHOLDS = {
-    "hard_negative_rate": 0.30,   # corpus prose figure ~0.50; v13 scored 0.001
-    "count_rule_f1": 0.21,        # human scores 0.274
-    "shortcut_probe_lift": 0.15,
-    "role_position_skew": 0.75,
-    "drift_rate": 0.15,
+    "hard_negative_rate": 0.39,      # min
+    "count_rule_f1": 0.35,           # max
+    "shortcut_probe_lift": 0.23,     # max
+    "role_adjacency_gap": 0.02,      # max
+    "role_position_skew": 0.75,      # max, unchanged, no corpus analogue
+    "drift_rate": 0.15,              # max, unchanged, verifier not on critical path
 }
 
 _MARKER = re.compile(r"\[/?E[12]\]")
@@ -169,6 +185,9 @@ def report(instances, records=None, drift_rate=None, strict=True, verbose=True):
         ("count-only rule F1", rule, THRESHOLDS["count_rule_f1"], "max"),
         ("shortcut probe lift", lift, THRESHOLDS["shortcut_probe_lift"], "max"),
     ]
+    from ddi.divergence import role_adjacency_gap
+    checks.append(("role adjacency gap", role_adjacency_gap(instances),
+                   THRESHOLDS["role_adjacency_gap"], "max"))
     if records:
         checks.append(("role position skew", role_position_skew(records),
                        THRESHOLDS["role_position_skew"], "max"))

@@ -1,0 +1,8 @@
+measurement,tier,corpus,synth,effect,sd@50,detect_n,estimate_n
+pairs per sentence,labelled,6.2887,3.3705,-2.9182,1.5642,200.0,100
+positive rate,labelled,0.1625,0.186,0.0235,0.0331,2000.0,200
+hard negative rate,labelled,0.5016,0.5087,0.0071,0.1796,,200
+count-rule F1,labelled,0.2813,0.2834,0.0021,0.0832,,200
+probe lift,labelled,0.1346,0.2319,0.0973,0.1219,500.0,2000
+"role adjacency, NONE",labelled+spans,0.0093,0.4711,0.4618,0.0067,50.0,2000
+role adjacency gap,labelled+spans,-0.0093,0.2353,0.2446,0.0158,50.0,2000
