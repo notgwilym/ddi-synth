@@ -1,0 +1,46 @@
+{
+  "dataset_id": "20260816-005908-3d6539",
+  "created_at": "2026-08-16T00:59:08",
+  "provenance": "synthetic",
+  "generator": {
+    "prompt_sha": "f32a41150a79",
+    "model": "gpt-oss-120b",
+    "reasoning_effort": "low",
+    "composition": "prior",
+    "version": "v15",
+    "note": "scene-level roles, entity cap 8, corpus-weighted MECHANISM",
+    "gen_id": "v15-full"
+  },
+  "vocab_source": {
+    "name": "drugbank+atc",
+    "sources": [
+      "drugbank",
+      "atc"
+    ],
+    "p_group": 0.3,
+    "n_drugs": 14932,
+    "n_groups": 425,
+    "sha256": "089ea59a2351"
+  },
+  "negative_strategy": null,
+  "parent_id": null,
+  "render_mode": "markers",
+  "seed": 0,
+  "size": {
+    "n_instances": 36000,
+    "n_sentences": 5798
+  },
+  "label_distribution": {
+    "NONE": 31521,
+    "MECHANISM": 1125,
+    "ADVISE": 1150,
+    "EFFECT": 1091,
+    "INT": 1113
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "762979cce0bb18a16ba33174a5508f2d961da3d24dc495abffbee2a49d9605a0",
+  "leakage_report": null,
+  "git_sha": "60c654235ff2ce3ce9405c52efe9017dc090babb",
+  "git_dirty": true,
+  "notes": "v15, 6000 specs"
+}

@@ -1,0 +1,457 @@
+diff --git a/ddi/prompt.py b/ddi/prompt.py
+index b1ae12e..579547f 100644
+--- a/ddi/prompt.py
++++ b/ddi/prompt.py
+@@ -1,33 +1,44 @@
+-"""Generator v14.
+-
+-The failure this replaces: v13 drew positives from the vignette generator (~1 pair per
+-sentence) and negatives from CONEG (6-15 pairs), so entity count predicted the label.
+-One-pair sentences were 75% positive, multi-pair ~100% negative, hard negative rate
+-0.001 against a corpus prose rate of ~0.50. The entity markers carried no signal at all
+-because pair identity was never a variable. Here every sentence comes from one sampler
+-and one prompt, and zero-assertion specs are drawn from the same distribution, so no
+-structural property can separate the classes.
+-
+-Four things about the prompt that are easy to get wrong, and were:
+-
+-The label NAME must not reach the model: v13 wrote "a clear MECHANISM interaction" into
+-sentences. The label CRITERIA must reach it, or a spec describing a change in exposure
+-can produce a sentence an annotator would read as a clinical effect, and the gold label
+-is then wrong.
+-
+-Nothing in a spec may be a phrase the model can lift. Content slots are noun phrases
+-that legitimately belong in the output, but ROLES are predicates, and written as English
+-they were copied straight through. They are opaque tokens, glossed once in the system
+-prompt.
+-
+-The scene must render on EVERY spec. When it only appeared where non-participants
+-existed, scene vocabulary ("regimen", "treatment pathway", "administered") correlated
+-almost perfectly with the absence of an assertion, and a bag-of-words probe recovered
+-the label from it. That is the v13 shortcut in lexical form.
+-
+-Where non-participants sit must be sampled. Left free, they landed after the assertion
+-96% of the time, so the classifier could learn "second half of the sentence means NONE"
+-without reading the markers at all. That is the same shortcut in positional form.
++"""Generator v16 = v14 plus one change.
++
++HISTORY
++v13 failed because positives came from the vignette generator (~1 pair per sentence) and
++negatives from CONEG (6-15 pairs), so entity count predicted the label: one-pair
++sentences 75% positive, multi-pair ~100% negative, hard negative rate 0.001 against a
++corpus prose rate of ~0.50. The entity markers carried no signal because pair identity
++was never a variable. v14 fixed that by construction and scored 0.379 against a filtered
++human baseline of 0.790.
++
++v15 bundled three changes (scene-level roles, entity cap 5->8, corpus-weighted MECHANISM
++content) and scored 0.333. Four composition-matched arms all landed 0.315-0.333, so
++composition does not explain it, and a calibrated binary verifier found no label-noise
++difference (corrected drift 0.000 for both). The regression is unattributed across three
++simultaneous changes, so v16 reverts all of it. One change at a time from here.
++
++THE ONE CHANGE
++An LLM verifier flagged 1,056 of v14's NONE pairs as reading like assertions. Removing
++exactly those gained 0.041 F1 over removing the same number at random, and the gain was
++recall (0.525 -> 0.623) with precision flat. So they were not mislabelled negatives
++poisoning precision; they were negatives that taught the classifier to withhold.
++
++Reading them, they are overwhelmingly zero-assertion sentences claiming something about
++the combination without claiming anything about a pair:
++
++  "Dibromothymoquinone was administered alongside Polydextrose, and the investigators
++   observed a modest improvement in symptom scores"
++  "the combination was tolerated and yielded modest improvements, suggesting a potential
++   benefit"
++
++Gold is NONE and gold is right: no pair is related. The old instruction said "Nothing in
++the sentence says that any drug affects any other", which the model satisfied literally
++while asserting a joint outcome. v16 forbids claims about the combination as a whole,
++drops the certainty axis from zero-assertion specs (with nothing asserted there is
++nothing to be certain about), and removes the outcome-shaped scenes that invite a
++result.
++
++NOTE ON THE DIVERGENCE FRAMEWORK
++Pruned and randomly-pruned v14 are indistinguishable on all ten divergence measurements
++and differ by 0.041 F1. No measurement in that table would have told you to do this. It
++is a property of individual instances, and every measurement there is a marginal.
+ """
+ import hashlib
+ import itertools
+@@ -35,10 +46,9 @@ import random
+ 
+ LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
+ 
+-# PRIOR is hand-specified from the annotation guidelines, matching the existing
+-# p_group=0.3 policy and keeping the from-scratch claim clean. MEASURED comes from the
+-# training split with the eight monster sentences excluded. Run both as arms: if they
+-# perform alike, the corpus statistics were a convenience rather than a crutch.
++# PRIOR is hand-specified from the annotation guidelines and keeps the from-scratch
++# claim runnable as a control arm. MEASURED comes from the training split with the eight
++# enumeration sentences excluded.
+ PRIOR = {
+     "n_entities": {2: 0.40, 3: 0.30, 4: 0.20, 5: 0.10},
+     "labels": {l: 0.25 for l in LABELS},
+@@ -51,20 +61,22 @@ MEASURED = {
+ }
+ COMPOSITION = {"prior": PRIOR, "measured": MEASURED}
+ 
++# Hand-tuned to decorrelate positive rate from entity count, which is what stopped the
++# count-only rule firing. NOT a corpus measurement; recorded as such in the manifest.
+ N_POSITIVES_BY_K = {
+     2: {0: 0.65, 1: 0.35},
+     3: {0: 0.40, 1: 0.45, 2: 0.15},
+     4: {0: 0.30, 1: 0.45, 2: 0.25},
+     5: {0: 0.25, 1: 0.40, 2: 0.35},
+-    6: {0: 0.20, 1: 0.40, 2: 0.40},
+ }
+ 
+-# Keys are opaque: "concurrent" and "subsequent" were being used as adjectives lifted
+-# straight from the field ("with concurrent Amedalin, later followed by subsequent
+-# Amidephrine"). group records whether the role implies concurrent use: "separated"
+-# roles make an interaction semantically unavailable, so the NONE label is safe by
+-# construction, while "concurrent" roles are the realistic hard-negative case. Using
+-# only the separated ones would trade one shortcut for another.
++
++# Roles are opaque codes, not phrases. Written as English they were copied straight into
++# sentences ("Fibrinogen the comparator agent is used as a comparator"). group records
++# whether the role implies concurrent use: "separated" roles make an interaction
++# semantically unavailable so the NONE label is safe by construction, "concurrent" roles
++# are the realistic hard-negative case, and using only the separated ones would trade
++# one artefact for another.
+ ROLES = {
+     "r1": ("separated", "was given earlier and has stopped"),
+     "r2": ("separated", "started after the others ended"),
+@@ -74,6 +86,7 @@ ROLES = {
+ }
+ P_ROLE = 0.55
+ ROLE_POS = {"before": 0.40, "after": 0.60}
++
+ _ROLE_GLOSS = "\n".join(f"  {k}   {v[1]}" for k, v in ROLES.items())
+ 
+ 
+@@ -115,9 +128,19 @@ statement rather than repeating the same clause twice.
+ WHEN NO ASSERTION IS ASKED FOR
+ 
+ Some requests have no statement block. Write ordinary clinical or research prose that
+-places every listed drug in the situation described at the top. Nothing in the sentence
+-says that any drug affects any other. Write it as one connected scene, not as a list of
+-drugs each with its own clause.
++places every listed drug in the situation described at the top. Write it as one
++connected scene, not as a list of drugs each with its own clause.
++
++Nothing in the sentence claims a relationship, in either direction:
++
++- not between any two of the drugs
++- not about the combination or the regimen as a whole
++
++So do not say the combination was effective, tolerated, beneficial, safe or additive, do
++not say outcomes improved or worsened, and do not report any result attributed to taking
++them together. The drugs are present in the same situation and that is all the sentence
++says. An outcome may belong to one drug alone, or to the patient's condition, never to
++the drugs in combination.
+ 
+ OTHER DRUGS
+ 
+@@ -152,6 +175,10 @@ SCOPE = {
+ 
+ 
+ # ---------------------------------------------------------------- content slots
++# Each slot is a token with a small alias pool; one alias is drawn per call, so the
++# lexical surface rotates while the semantics hold. Aliases are noun phrases that belong
++# in the output, unlike roles, which are predicates and so must stay symbolic.
++
+ SITES = {
+     "hepatic_metabolism": ["hepatic metabolism", "CYP-mediated metabolism",
+                            "oxidative metabolism", "liver enzyme activity",
+@@ -168,8 +195,8 @@ SITES = {
+ }
+ EXPOSURE = ["higher", "lower"]
+ 
+-# "reduced" is deliberately absent: pairing a toxicity with a reduction produces a
+-# sentence asserting that one drug protects against the other's harm.
++# "reduced" is deliberately absent from HARM_EXTENT: pairing a toxicity with a reduction
++# produces a sentence asserting that one drug protects against the other's harm.
+ HARMS = {
+     "bleeding": ["bleeding", "haemorrhage", "bleeding risk"],
+     "sedation": ["sedation", "drowsiness", "central nervous system depression"],
+@@ -210,13 +237,16 @@ AXES = {
+     "detail": ["no figures", "direction only", "one figure",
+                "a pharmacokinetic figure"],
+     "position": ["main clause", "subordinate clause", "relative clause"],
+-    # 112 of ~150 MedLine sentences opened with "in a/the cohort/study". The register
+-    # line was supplying a fixed frame, so the opening is now drawn explicitly.
++    # 112 of ~150 MedLine sentences opened with "in a/the cohort/study" before this
++    # axis existed: the register line was supplying a fixed frame.
+     "opening": ["with a drug name", "with the finding", "with a condition or setting",
+                 "with a subordinate clause", "with the recommendation"],
+ }
+ N_AXES = {1: 0.45, 2: 0.55}
+ 
++# Length is drawn on every spec, independent of label. Without it, zero-assertion
++# sentences ran ~6 words longer than assertion ones and a bag-of-words probe could read
++# the label off clause count.
+ LENGTH = {"short": 0.35, "medium": 0.40, "long": 0.25}
+ LENGTH_TEXT = {
+     "short": "a single clause",
+@@ -244,10 +274,14 @@ LABEL_BANS = {
+             "opening": {"with the recommendation", "with the finding"}},
+ }
+ 
+-NO_ASSERT_AXES = ["voice", "certainty", "subject", "opening"]
++# v16: "certainty" removed. With nothing asserted there is nothing to be certain about,
++# and it was what licensed "suggesting a potential benefit" and "the investigators
++# observed a modest improvement" -- the exact phrasings the verifier flagged.
++NO_ASSERT_AXES = ["voice", "subject", "opening"]
+ NO_ASSERT_SUBJECTS = ["one of the drugs listed", "the treatment", "the regimen",
+                       "the patients"]
+-NO_ASSERT_BANS = {"subject": {"the patients"}}
++NO_ASSERT_BANS = {"subject": {"the patients"},
++                  "opening": {"with the finding"}}
+ 
+ REGISTER_LINE = {
+     "DrugBank": "product label prose: impersonal, present tense, no study participants,"
+@@ -256,17 +290,25 @@ REGISTER_LINE = {
+                " size or percentage where detail is called for, hedged conclusions",
+ }
+ 
+-# Rendered on EVERY spec. Confined to specs with non-participants, scene vocabulary was
+-# a near-perfect predictor of the absence of an assertion.
++# Rendered on EVERY spec. Confined to specs with non-participants, scene vocabulary
++# predicted the absence of an assertion almost perfectly.
++#
++# v16: the outcome-shaped scenes are gone. "compared in the same study" and "the
++# treatments recorded for this patient" both imply a result and the model reaches for
++# one, which is how joint-outcome claims got into zero-assertion sentences.
+ SCENES = {
+     "DrugBank": ["used in the same area of treatment",
+                  "options for the same indication",
+                  "part of the same treatment pathway",
+-                 "listed together on the same label"],
+-    "MedLine": ["compared in the same study",
++                 "listed together on the same label",
++                 "prescribed for different conditions in the same patient",
++                 "available in the same section of the formulary"],
++    "MedLine": ["recorded in the same patient's notes",
+                 "given at different points in the patient's care",
+-                "the treatments recorded for this patient",
+-                "the options available for the same indication"],
++                "treatments this patient had received",
++                "the options available for the same indication",
++                "listed in the study's inclusion criteria",
++                "documented in the same case series"],
+ }
+ 
+ 
+@@ -281,9 +323,7 @@ def _sample_style(register, label, rng):
+     chosen = rng.sample(pool, min(_pick(N_AXES, rng), len(pool)))
+     if "opening" not in chosen:
+         chosen.append("opening")
+-    style = {}
+-    length = _pick(LENGTH, rng)
+-    style["length"] = LENGTH_TEXT[length]
++    style = {"length": LENGTH_TEXT[_pick(LENGTH, rng)]}
+     for ax in chosen:
+         base = AXES[ax] if (label or ax != "subject") else NO_ASSERT_SUBJECTS
+         banned = set(REGISTER_BANS.get(register, {}).get(ax, set()))
+@@ -295,6 +335,8 @@ def _sample_style(register, label, rng):
+ 
+ 
+ def _content(label, rng):
++    """Symbolic content. Values are noun phrases that belong in the output; nothing here
++    is a clause the model can lift wholesale."""
+     if label == "MECHANISM":
+         site = rng.choice(list(SITES))
+         return {"site": rng.choice(SITES[site]), "exposure": rng.choice(EXPOSURE),
+@@ -316,6 +358,8 @@ def _content(label, rng):
+ 
+ 
+ def _assign_roles(roled, rng):
++    """One distinct role code each: two drugs labelled the same way reads as a template
++    rather than a scene."""
+     roles, used = {}, set()
+     for key in roled:
+         candidates = [r for r in ROLES if r not in used]
+@@ -327,7 +371,14 @@ def _assign_roles(roled, rng):
+     return roles
+ 
+ 
+-def make_v14_specs(n, vocab, seed=0, composition="prior"):
++# A name containing " and " is two drugs wearing one label ("prolgolimab and
++# nurulimab"). Any pair instance built from it reads as three entities, and if either
++# component is separately in the vocabulary the substring check raises.
++def _unusable(name):
++    return " and " in name.lower() or "/" in name
++
++
++def make_v16_specs(n, vocab, seed=0, composition="prior"):
+     """One spec per sentence. The label is decided here and never named to the model.
+ 
+     vocab.sample(k, rng) returns k names and chooses groups with probability p_group;
+@@ -341,20 +392,22 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+ 
+     for i in range(n):
+         register = _pick(cfg["registers"], rng)
+-        key = _pick(cfg["n_entities"], rng)
++        k = _pick(cfg["n_entities"], rng)
+ 
+         surfaces, seen = [], set()
+-        for _ in range(80):
+-            if len(surfaces) == key:
++        for _ in range(200):
++            if len(surfaces) == k:
+                 break
+             cand = vocab.sample(1, rng)[0]
++            if _unusable(cand):
++                continue
+             low = cand.lower()
+             # a name containing another name breaks span resolution downstream
+             if low in seen or any(low in s or s in low for s in seen):
+                 continue
+             seen.add(low)
+             surfaces.append(cand)
+-        if len(surfaces) < key:
++        if len(surfaces) < k:
+             raise RuntimeError("vocab exhausted while sampling distinct names")
+ 
+         ents = [{"key": chr(65 + j), "surface": s,
+@@ -364,7 +417,7 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+         by_key = {e["key"]: e for e in ents}
+         pairs = list(itertools.combinations(keys, 2))
+ 
+-        n_pos = _pick(N_POSITIVES_BY_K[key], rng)
++        n_pos = _pick(N_POSITIVES_BY_K[k], rng)
+ 
+         positives = []
+         if n_pos >= 1:
+@@ -382,15 +435,12 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+         asserts = [{"between": [a, b], "label": label, "content": content}
+                    for a, b in positives]
+ 
+-        style = _sample_style(register, label, rng)
+-
+         participating = {x for p in positives for x in p}
+         non_participants = [e["key"] for e in ents if e["key"] not in participating]
+-        cap = 2 if positives else max(1, len(non_participants) // 3)
++        cap = 2 if positives else 1
+         candidates = rng.sample(non_participants, min(len(non_participants), cap))
+         roled = [key for key in candidates if rng.random() < P_ROLE]
+         roles = _assign_roles(roled, rng)
+-        role_pos = _pick(ROLE_POS, rng) if (roles and asserts) else None
+ 
+         matrix = {f"{a}|{b}": "NONE" for a, b in pairs}
+         for asrt in asserts:
+@@ -402,19 +452,23 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+             "register": register,
+             "entities": ents,
+             "asserts": asserts,
+-            "style": style,
++            "style": _sample_style(register, label, rng),
+             "roles": roles,
+-            "role_pos": role_pos,
++            "role_pos": _pick(ROLE_POS, rng) if (roles and asserts) else None,
+             "scene": rng.choice(SCENES[register]),
+             "matrix": matrix,
+         })
+     return specs
+ 
+ 
+-def render_v14(spec):
++def render_v16(spec):
+     """One names block with a count: split drug/class blocks lost a class name in three
+-    of three samples, and the inline type marker was written into sentences. Style
+-    renders last, so the model knows what it is styling before it is told how."""
++    of three samples, and an inline type marker was written into sentences. Style
++    renders last, so the model knows what it is styling before it is told how.
++
++    The role position goes in the block heading rather than as a keyed row: as a row the
++    model wrote "these come after the main statement" into the sentence itself.
++    """
+     by_key = {e["key"]: e for e in spec["entities"]}
+     names = [(e["surface"], "") for e in spec["entities"]]
+     blocks = [(f"names to use, all {len(names)}", names)]
+@@ -429,10 +483,11 @@ def render_v14(spec):
+         blocks.append((head, rows))
+ 
+     if spec["roles"]:
+-        rows = [(by_key[k]["surface"], v["role"]) for k, v in spec["roles"].items()]
++        head = "other drugs"
+         if spec["role_pos"]:
+-            rows.append(("these come", f"{spec['role_pos']} the main statement"))
+-        blocks.append(("other drugs", rows))
++            head = f"other drugs (mention these {spec['role_pos']} the main statement)"
++        blocks.append((head, [(by_key[k]["surface"], v["role"])
++                              for k, v in spec["roles"].items()]))
+ 
+     if spec["style"]:
+         blocks.append(("style", list(spec["style"].items())))
+@@ -446,7 +501,7 @@ def render_v14(spec):
+     return "\n".join(lines).rstrip()
+ 
+ 
+-def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
++def make_v16_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+                        reasoning_effort="low", max_output_tokens=1500,
+                        api="responses"):
+     """Returns {sentence}. Nothing else: the label lives in the spec, and asking for it
+@@ -456,6 +511,9 @@ def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+     much of it counting words by hand and restating the register rules; at low it spends
+     ~100 and the sentences are no worse. max_output_tokens bounds a runaway rather than
+     letting it burn the full context, which turns a stall into a fast incomplete.
++
++    api="chat" falls back to chat.completions, which every vLLM worker serves; the
++    Responses route is worker-specific and 404s on some models.
+     """
+     from pydantic import BaseModel
+ 
+@@ -492,13 +550,13 @@ def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+         return Written.model_validate_json(resp.choices[0].message.content).sentence
+ 
+     def sample_fn(spec):
+-        user = render_v14(spec)
++        user = render_v16(spec)
+         return {"sentence": (_responses if api == "responses" else _chat)(user)}
+ 
+     return sample_fn
+ 
+ 
+-def v14_fingerprint():
++def v16_fingerprint():
+     parts = [SYSTEM] + sorted(SCOPE.values())
+     parts += sorted(a for v in SITES.values() for a in v)
+     parts += sorted(a for v in HARMS.values() for a in v)
+@@ -507,4 +565,11 @@ def v14_fingerprint():
+     parts += sorted(ROLES)
+     parts += sorted(a for v in AXES.values() for a in v)
+     parts += sorted(s for v in SCENES.values() for s in v)
+-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+\ No newline at end of file
++    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
++
++
++# aliases so existing notebooks and scripts keep working
++make_v14_specs = make_v16_specs
++render_v14 = render_v16
++make_v14_sample_fn = make_v16_sample_fn
++v14_fingerprint = v16_fingerprint
+\ No newline at end of file
+diff --git a/ddi/resolve.py b/ddi/resolve.py
+index a0f1877..710af88 100644
+--- a/ddi/resolve.py
++++ b/ddi/resolve.py
+@@ -85,7 +85,7 @@ def generation_records(gen_id):
+         rec = {"sentence": text, "register": spec["register"],
+                "label": spec["asserts"][0]["label"] if spec["asserts"] else "NONE",
+                "n_entities": len(spec["entities"]),
+-               "role_groups": [v["group"] for v in spec["roles"].values()],
++               "role_groups": [v["group"] for v in spec.get("roles", {}).values()],
+                "role_pos_requested": spec.get("role_pos"),
+                "positive_span": None, "role_spans": [], "sep_achieved": None}
+ 
+@@ -98,7 +98,7 @@ def generation_records(gen_id):
+                 # span distribution the classifier actually sees
+                 rec["sep_achieved"] = sum(1 for k, p in pos.items()
+                                           if k not in (a, b) and lo < p < hi)
+-        rec["role_spans"] = [pos[k] for k in spec["roles"] if pos.get(k, -1) >= 0]
++        rec["role_spans"] = [pos[k] for k in spec.get("roles", {}) if pos.get(k, -1) >= 0]
+         out.append(rec)
+     return out

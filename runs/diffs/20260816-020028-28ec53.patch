@@ -1,0 +1,632 @@
+diff --git a/ddi/prompt.py b/ddi/prompt.py
+index b1ae12e..797f119 100644
+--- a/ddi/prompt.py
++++ b/ddi/prompt.py
+@@ -1,33 +1,44 @@
+-"""Generator v14.
++"""Generator v15.
+ 
+-The failure this replaces: v13 drew positives from the vignette generator (~1 pair per
+-sentence) and negatives from CONEG (6-15 pairs), so entity count predicted the label.
+-One-pair sentences were 75% positive, multi-pair ~100% negative, hard negative rate
+-0.001 against a corpus prose rate of ~0.50. The entity markers carried no signal at all
+-because pair identity was never a variable. Here every sentence comes from one sampler
+-and one prompt, and zero-assertion specs are drawn from the same distribution, so no
+-structural property can separate the classes.
++v13's failure: positives came from the vignette generator (~1 pair per sentence) and
++negatives from CONEG (6-15 pairs), so entity count predicted the label. One-pair
++sentences were 75% positive, multi-pair ~100% negative, hard negative rate 0.001 against
++a corpus prose rate of ~0.50. The entity markers carried no signal at all because pair
++identity was never a variable. v14 fixed that by construction: one sampler, one prompt,
++zero-assertion specs drawn from the same distribution.
++
++v14 scored 0.379 against a filtered human baseline of 0.790, and every build gate passes
++on it. What the gates never measured is where the remaining divergence sits, so v15
++targets three things measured against the corpus rather than guessed:
++
++  role adjacency gap   corpus -0.009, v14 +0.235   -> roles move to the scene
++  pairs per sentence   corpus  6.29,  v14  3.37    -> entity cap 5 -> 8
++  MECHANISM precision  0.23 against EFFECT's 0.42  -> content reweighted to corpus
+ 
+ Four things about the prompt that are easy to get wrong, and were:
+ 
+ The label NAME must not reach the model: v13 wrote "a clear MECHANISM interaction" into
+ sentences. The label CRITERIA must reach it, or a spec describing a change in exposure
+-can produce a sentence an annotator would read as a clinical effect, and the gold label
+-is then wrong.
+-
+-Nothing in a spec may be a phrase the model can lift. Content slots are noun phrases
+-that legitimately belong in the output, but ROLES are predicates, and written as English
+-they were copied straight through. They are opaque tokens, glossed once in the system
+-prompt.
+-
+-The scene must render on EVERY spec. When it only appeared where non-participants
+-existed, scene vocabulary ("regimen", "treatment pathway", "administered") correlated
+-almost perfectly with the absence of an assertion, and a bag-of-words probe recovered
+-the label from it. That is the v13 shortcut in lexical form.
+-
+-Where non-participants sit must be sampled. Left free, they landed after the assertion
+-96% of the time, so the classifier could learn "second half of the sentence means NONE"
+-without reading the markers at all. That is the same shortcut in positional form.
++can produce a sentence an annotator would read as a clinical effect.
++
++Nothing in a spec may be a phrase the model can lift. v14's role codes were opaque
++tokens precisely because the English versions were copied straight through ("Fibrinogen
++the comparator agent is used as a comparator").
++
++The scene renders on EVERY spec. Confined to specs with non-participants, scene
++vocabulary predicted the absence of an assertion almost perfectly.
++
++Role language must not attach to individual drugs. v14 marked non-participants
++per-drug, which put role vocabulary beside 47% of NONE-marked entities and 24% of
++positive ones. The corpus does the same job at sentence level ("in patients previously
++treated with X, A increased the exposure of B"), so the language falls near every pair
++about equally: corpus POS adjacency 0.019, NONE adjacency 0.009. Hence no ROLES dict in
++v15; the scene carries it.
++
++Note the failed intervention that led here: halving role prevalence (P_ROLE 0.55 -> 0.2)
++cut NONE adjacency 0.468 -> 0.240 but left the ratio at ~2.0, and F1 fell 0.035.
++Reducing an artefact's frequency without changing its class-conditional
++discriminativeness does nothing and can hurt.
+ """
+ import hashlib
+ import itertools
+@@ -35,49 +46,39 @@ import random
+ 
+ LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
+ 
+-# PRIOR is hand-specified from the annotation guidelines, matching the existing
+-# p_group=0.3 policy and keeping the from-scratch claim clean. MEASURED comes from the
+-# training split with the eight monster sentences excluded. Run both as arms: if they
+-# perform alike, the corpus statistics were a convenience rather than a crutch.
++# PRIOR is hand-specified from the annotation guidelines and keeps the from-scratch
++# claim runnable as a control arm. MEASURED comes from the training split with the eight
++# enumeration sentences excluded.
++#
++# n_entities is shifted up in both from v14's {2:.41, 3:.27, 4:.14, 5:.07, 6:.04}.
++# v14 averaged 2.9 entities and 3.37 pairs per sentence against a corpus 6.29. This
++# distribution averages ~3.9 entities, which should give ~5.5 pairs.
+ PRIOR = {
+-    "n_entities": {2: 0.40, 3: 0.30, 4: 0.20, 5: 0.10},
++    "n_entities": {2: 0.30, 3: 0.25, 4: 0.17, 5: 0.12, 6: 0.08, 7: 0.05, 8: 0.03},
+     "labels": {l: 0.25 for l in LABELS},
+     "registers": {"DrugBank": 0.5, "MedLine": 0.5},
+ }
+ MEASURED = {
+-    "n_entities": {2: 0.410, 3: 0.272, 4: 0.137, 5: 0.073, 6: 0.040},
++    "n_entities": {2: 0.30, 3: 0.25, 4: 0.17, 5: 0.12, 6: 0.08, 7: 0.05, 8: 0.03},
+     "labels": {"EFFECT": 0.440, "MECHANISM": 0.289, "ADVISE": 0.210, "INT": 0.061},
+     "registers": {"DrugBank": 0.85, "MedLine": 0.15},
+ }
+ COMPOSITION = {"prior": PRIOR, "measured": MEASURED}
+ 
++# Hand-tuned to decorrelate positive rate from entity count, which is what stopped the
++# count rule firing. NOT a corpus measurement; recorded as such in the manifest.
+ N_POSITIVES_BY_K = {
+     2: {0: 0.65, 1: 0.35},
+     3: {0: 0.40, 1: 0.45, 2: 0.15},
+     4: {0: 0.30, 1: 0.45, 2: 0.25},
+     5: {0: 0.25, 1: 0.40, 2: 0.35},
+     6: {0: 0.20, 1: 0.40, 2: 0.40},
++    7: {0: 0.18, 1: 0.37, 2: 0.45},
++    8: {0: 0.15, 1: 0.35, 2: 0.50},
+ }
+ 
+-# Keys are opaque: "concurrent" and "subsequent" were being used as adjectives lifted
+-# straight from the field ("with concurrent Amedalin, later followed by subsequent
+-# Amidephrine"). group records whether the role implies concurrent use: "separated"
+-# roles make an interaction semantically unavailable, so the NONE label is safe by
+-# construction, while "concurrent" roles are the realistic hard-negative case. Using
+-# only the separated ones would trade one shortcut for another.
+-ROLES = {
+-    "r1": ("separated", "was given earlier and has stopped"),
+-    "r2": ("separated", "started after the others ended"),
+-    "r3": ("separated", "a comparator"),
+-    "r4": ("separated", "used if the first choice is unsuitable"),
+-    "r5": ("separated", "not given, or not permitted"),
+-}
+-P_ROLE = 0.55
+-ROLE_POS = {"before": 0.40, "after": 0.60}
+-_ROLE_GLOSS = "\n".join(f"  {k}   {v[1]}" for k, v in ROLES.items())
+-
+ 
+-SYSTEM = f"""You write single sentences of biomedical text for a drug interaction corpus.
++SYSTEM = """You write single sentences of biomedical text for a drug interaction corpus.
+ 
+ Each request lists drug names, the content the sentence carries, and a style. Write
+ exactly one sentence.
+@@ -89,10 +90,9 @@ assertion at all. When it does, the "scope" line says which kind of statement to
+ The four kinds are exclusive. Write the one asked for and none of the others: a sentence
+ that mixes them cannot be used.
+ 
+-1. Exposure and handling / mechanism. How much of one drug is present, or how the body
+-   takes it up, distributes it, breaks it down or removes it, changed by the presence of
+-   the other. Say what changes and in which direction. Do not say what happens to the
+-   patient as a result.
++1. Exposure and handling / mechanism. How the body takes up, distributes, breaks down or
++   removes one drug, changed by the presence of the other. Name the pathway and say
++   which way the change goes. Do not say what happens to the patient as a result.
+ 
+ 2. Clinical consequence / effect. What follows for the patient when the two are
+    combined: an effect, a risk, a loss of efficacy. Say what the consequence is. Do not
+@@ -109,8 +109,8 @@ Only the pair named in the statement block is being asserted about. Other drugs
+ list are present in the sentence but nothing is claimed between them, or between them
+ and the pair.
+ 
+-When two statements are given they share a drug. Write them as one coordinated
+-statement rather than repeating the same clause twice.
++When a second statement is given it shares a drug and the same content as the first.
++Write them as one coordinated statement, not as the same clause twice.
+ 
+ WHEN NO ASSERTION IS ASKED FOR
+ 
+@@ -119,23 +119,16 @@ places every listed drug in the situation described at the top. Nothing in the s
+ says that any drug affects any other. Write it as one connected scene, not as a list of
+ drugs each with its own clause.
+ 
+-OTHER DRUGS
+-
+-Names under "other drugs" carry a code saying what part they play. The code is a
+-category, not a word to use: work the part into the sentence in your own words. A drug
+-marked r1 might appear as "previously treated with", "after discontinuing", or "who had
+-received".
+-
+-{_ROLE_GLOSS}
+-
+ RULES
+ 
+ - Use every drug name listed, and no others.
+ - Reproduce each name as given, including any punctuation or non-ASCII characters in it.
++- Not every drug listed takes part in the statement. Place the others however the
++  situation described at the top allows. Do not attach an explanation to each one.
+ - Every drug you name must be doing something in the sentence.
+ - The drugs listed may not be combined in real practice. Write the sentence as specified.
+-- Write only prose. The field names and codes in the request are instructions to you,
+-  not words to put in the sentence.
++- Write only prose. The field names in the request are instructions to you, not words to
++  put in the sentence.
+ - Vary how the sentence opens. Do not begin every sentence the same way.
+ - Keep it to one clause or two, about the length of a single sentence in a drug label or
+   an abstract.
+@@ -143,8 +136,11 @@ RULES
+ - One sentence. No markdown."""
+ 
+ 
++# MECHANISM's scope now invites naming the pathway, which the corpus does in 11% of
++# cases via a CYP enzyme and 20% via an inhibition verb.
+ SCOPE = {
+-    "MECHANISM": "exposure and handling only, no clinical consequence",
++    "MECHANISM": "how the body handles one drug, changed by the other. name the pathway "
++                 "and the direction of change, not what happens to the patient",
+     "EFFECT": "clinical consequence only, no explanation of handling or levels",
+     "ADVISE": "recommended action only, no consequence and no mechanism",
+     "INT": "bare interaction only, no mechanism, consequence, advice or figures",
+@@ -152,24 +148,82 @@ SCOPE = {
+ 
+ 
+ # ---------------------------------------------------------------- content slots
++#
++# MECHANISM measured on 743 relations in the train split. v14 drew six sites near
++# uniformly at 16.7% each; corpus proportions are very different and transporter
++# language appears zero times, so it is dropped entirely.
++#
++# CONTAMINATION NOTE: the proportions below are aggregate statistics over the train
++# split, a declared MEASURED input. The slot design is additionally informed by reading
++# ~50 gold sentences, which contaminates the PRIOR arm for this class specifically.
++
+ SITES = {
+     "hepatic_metabolism": ["hepatic metabolism", "CYP-mediated metabolism",
+-                           "oxidative metabolism", "liver enzyme activity",
++                           "oxidative metabolism", "hepatic clearance",
+                            "first-pass metabolism"],
+-    "absorption": ["gastrointestinal absorption", "uptake from the gut",
+-                   "oral absorption", "absorption from the gastrointestinal tract"],
+-    "protein_binding": ["plasma protein binding", "binding to serum albumin",
+-                        "the protein-bound fraction"],
++    "absorption": ["gastrointestinal absorption", "absorption from the gut",
++                   "oral absorption", "oral bioavailability"],
+     "renal_clearance": ["renal clearance", "excretion by the kidney",
+                         "tubular secretion", "urinary elimination"],
+-    "transporter": ["P-glycoprotein transport", "efflux transport",
+-                    "carrier-mediated transport", "intestinal transport"],
+-    "gastric_ph": ["gastric pH", "stomach acidity", "gastric acid secretion"],
++    "protein_binding": ["plasma protein binding", "binding to serum proteins"],
++    "gastric_ph": ["gastric pH", "gastric acid secretion"],
++}
++# corpus: metabolism 0.225, absorption 0.124, renal 0.070, protein binding 0.015,
++# transporter 0.000. Renormalised over the sites that appear at all.
++SITE_DIST = {"hepatic_metabolism": 0.50, "absorption": 0.27,
++             "renal_clearance": 0.15, "protein_binding": 0.05, "gastric_ph": 0.03}
++
++# How the change happens. inhibit* appears in 19.8% of corpus MECHANISM sentences and
++# induc* in 10.0%; v14 produced neither, ever.
++MODES = {
++    "inhibits": ["inhibition", "blockade"],
++    "induces": ["induction", "enhanced activity"],
++    "displaces": ["displacement from binding sites"],
++    "competes": ["competition for the same pathway"],
++    "chelates": ["chelation, forming a complex"],
++}
++MODE_BY_SITE = {
++    "hepatic_metabolism": {"inhibits": 0.60, "induces": 0.35, "competes": 0.05},
++    "absorption": {"chelates": 0.45, "inhibits": 0.35, "competes": 0.20},
++    "renal_clearance": {"competes": 0.50, "inhibits": 0.50},
++    "protein_binding": {"displaces": 1.0},
++    "gastric_ph": {"inhibits": 1.0},
+ }
+-EXPOSURE = ["higher", "lower"]
+ 
+-# "reduced" is deliberately absent: pairing a toxicity with a reduction produces a
+-# sentence asserting that one drug protects against the other's harm.
++# Direction is DETERMINED by site and mode, not drawn independently. v14 sampled it
++# freely and produced "hepatic metabolism, inhibition, serum levels, lower", which is
++# backwards: inhibiting metabolism raises levels. Blocking a clearance route raises
++# exposure; blocking an uptake route lowers it.
++DIRECTION = {
++    ("hepatic_metabolism", "inhibits"): "higher",
++    ("hepatic_metabolism", "induces"): "lower",
++    ("hepatic_metabolism", "competes"): "higher",
++    ("renal_clearance", "inhibits"): "higher",
++    ("renal_clearance", "competes"): "higher",
++    ("protein_binding", "displaces"): "higher",   # raises the unbound fraction
++    ("absorption", "chelates"): "lower",
++    ("absorption", "inhibits"): "lower",
++    ("absorption", "competes"): "lower",
++    ("gastric_ph", "inhibits"): "lower",          # less acid, less dissolution
++}
++
++# 11.0% of corpus MECHANISM sentences name a CYP enzyme; CYP3A4 is 67 of 82 mentions.
++ENZYMES = {"CYP3A4": 0.55, "CYP3A": 0.15, "CYP2D6": 0.10, "CYP2C9": 0.08,
++           "CYP2C19": 0.05, "CYP1A2": 0.04, "CYP2E1": 0.03}
++P_ENZYME = 0.11
++
++# "plasma concentration" is the head noun in 24.8% of corpus MECHANISM sentences.
++# v14 said "exposure" and only "exposure".
++EXPOSURE_NOUN = {"plasma concentrations": 0.35, "systemic exposure": 0.20,
++                 "serum levels": 0.15, "the AUC": 0.15, "blood levels": 0.15}
++
++# AUC / Cmax / half-life figures appear in 13.7%
++PK_FIGURES = ["about 30%", "roughly twofold", "by 80%", "approximately 25%",
++              "threefold", "by 45%", "about 60%"]
++P_PK_FIGURE = 0.14
++
++# "reduced" is deliberately absent from HARM_EXTENT: pairing a toxicity with a reduction
++# produces a sentence asserting that one drug protects against the other's harm.
+ HARMS = {
+     "bleeding": ["bleeding", "haemorrhage", "bleeding risk"],
+     "sedation": ["sedation", "drowsiness", "central nervous system depression"],
+@@ -210,13 +264,16 @@ AXES = {
+     "detail": ["no figures", "direction only", "one figure",
+                "a pharmacokinetic figure"],
+     "position": ["main clause", "subordinate clause", "relative clause"],
+-    # 112 of ~150 MedLine sentences opened with "in a/the cohort/study". The register
+-    # line was supplying a fixed frame, so the opening is now drawn explicitly.
++    # 112 of ~150 MedLine sentences opened with "in a/the cohort/study" before this
++    # axis existed: the register line was supplying a fixed frame.
+     "opening": ["with a drug name", "with the finding", "with a condition or setting",
+                 "with a subordinate clause", "with the recommendation"],
+ }
+ N_AXES = {1: 0.45, 2: 0.55}
+ 
++# Length is drawn on every spec, independent of label. Without it, zero-assertion
++# sentences ran ~6 words longer than assertion ones and a bag-of-words probe could read
++# the label off clause count.
+ LENGTH = {"short": 0.35, "medium": 0.40, "long": 0.25}
+ LENGTH_TEXT = {
+     "short": "a single clause",
+@@ -230,6 +287,9 @@ REGISTER_BANS = {
+                  "detail": {"a pharmacokinetic figure"}},
+     "MedLine": {},
+ }
++# Each scope forbids the axis values that contradict it. Without these the spec asks for
++# a bare interaction with a stated direction, or a recommendation whose subject is a
++# plasma concentration.
+ LABEL_BANS = {
+     "MECHANISM": {"opening": {"with the recommendation"}},
+     "EFFECT": {"subject": {"plasma concentrations"},
+@@ -256,17 +316,33 @@ REGISTER_LINE = {
+                " size or percentage where detail is called for, hedged conclusions",
+ }
+ 
+-# Rendered on EVERY spec. Confined to specs with non-participants, scene vocabulary was
+-# a near-perfect predictor of the absence of an assertion.
++# The scene is now the ONLY framing device for non-participants, and carries the
++# temporal and comparative structure that v14's per-drug role codes used to. Rendered on
++# every spec: confined to specs with non-participants it predicted the absence of an
++# assertion almost perfectly.
++#
++# Written as complete sentences. v14 rendered them after "these are", which broke as
++# soon as the scenes gained temporal clauses ("these are some started only after the
++# others were withdrawn").
+ SCENES = {
+-    "DrugBank": ["used in the same area of treatment",
+-                 "options for the same indication",
+-                 "part of the same treatment pathway",
+-                 "listed together on the same label"],
+-    "MedLine": ["compared in the same study",
+-                "given at different points in the patient's care",
+-                "the treatments recorded for this patient",
+-                "the options available for the same indication"],
++    "DrugBank": [
++        "These are used in the same area of treatment.",
++        "These are options for the same indication.",
++        "These are part of the same treatment pathway.",
++        "These are listed together on the same label.",
++        "Some of these were given before the others and have since been stopped.",
++        "One of these is used only when the others are unsuitable.",
++        "One of these is not given to patients receiving the others.",
++    ],
++    "MedLine": [
++        "These were compared in the same study.",
++        "These were given at different points in the patient's care.",
++        "These were the treatments recorded for this patient.",
++        "These were the options available for the same indication.",
++        "Some of these had been given earlier in the patient's care and stopped.",
++        "Some of these were started only after the others were withdrawn.",
++        "One of these was excluded from the study population.",
++    ],
+ }
+ 
+ 
+@@ -281,9 +357,7 @@ def _sample_style(register, label, rng):
+     chosen = rng.sample(pool, min(_pick(N_AXES, rng), len(pool)))
+     if "opening" not in chosen:
+         chosen.append("opening")
+-    style = {}
+-    length = _pick(LENGTH, rng)
+-    style["length"] = LENGTH_TEXT[length]
++    style = {"length": LENGTH_TEXT[_pick(LENGTH, rng)]}
+     for ax in chosen:
+         base = AXES[ax] if (label or ax != "subject") else NO_ASSERT_SUBJECTS
+         banned = set(REGISTER_BANS.get(register, {}).get(ax, set()))
+@@ -295,10 +369,22 @@ def _sample_style(register, label, rng):
+ 
+ 
+ def _content(label, rng):
++    """Symbolic content. Values are noun phrases that belong in the output; nothing here
++    is a clause the model can lift wholesale."""
+     if label == "MECHANISM":
+-        site = rng.choice(list(SITES))
+-        return {"site": rng.choice(SITES[site]), "exposure": rng.choice(EXPOSURE),
+-                "_slots": {"site": site}}
++        site = _pick(SITE_DIST, rng)
++        mode = _pick(MODE_BY_SITE[site], rng)
++        c = {"pathway": rng.choice(SITES[site]),
++             "how": rng.choice(MODES[mode]),
++             "what changes": _pick(EXPOSURE_NOUN, rng),
++             "direction": DIRECTION[(site, mode)],
++             "_slots": {"site": site, "mode": mode}}
++        if site == "hepatic_metabolism" and rng.random() < P_ENZYME:
++            c["enzyme"] = _pick(ENZYMES, rng)
++            c["_slots"]["enzyme"] = c["enzyme"]
++        if rng.random() < P_PK_FIGURE:
++            c["by how much"] = rng.choice(PK_FIGURES)
++        return c
+     if label == "EFFECT":
+         if rng.random() < P_EFFICACY:
+             slot = "loss_of_efficacy"
+@@ -315,19 +401,17 @@ def _content(label, rng):
+     return {"_slots": {}}
+ 
+ 
+-def _assign_roles(roled, rng):
+-    roles, used = {}, set()
+-    for key in roled:
+-        candidates = [r for r in ROLES if r not in used]
+-        if not candidates:
+-            break
+-        role = rng.choice(candidates)
+-        used.add(role)
+-        roles[key] = {"role": role, "group": ROLES[role][0]}
+-    return roles
++# A name containing " and " is two drugs wearing one label ("prolgolimab and
++# nurulimab", "nebivolol and amlodipine"). Any pair instance built from it reads as
++# three entities, and if either component is separately in the vocabulary the substring
++# check raises. Filtered at sampling rather than in the vocabulary so the unfiltered
++# lexicon stays available as an ablation.
++def _unusable(name):
++    low = name.lower()
++    return " and " in low or "/" in name or name.count("(") != name.count(")")
+ 
+ 
+-def make_v14_specs(n, vocab, seed=0, composition="prior"):
++def make_v15_specs(n, vocab, seed=0, composition="prior"):
+     """One spec per sentence. The label is decided here and never named to the model.
+ 
+     vocab.sample(k, rng) returns k names and chooses groups with probability p_group;
+@@ -341,30 +425,31 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+ 
+     for i in range(n):
+         register = _pick(cfg["registers"], rng)
+-        key = _pick(cfg["n_entities"], rng)
++        k = _pick(cfg["n_entities"], rng)
+ 
+         surfaces, seen = [], set()
+-        for _ in range(80):
+-            if len(surfaces) == key:
++        for _ in range(200):
++            if len(surfaces) == k:
+                 break
+             cand = vocab.sample(1, rng)[0]
++            if _unusable(cand):
++                continue
+             low = cand.lower()
+             # a name containing another name breaks span resolution downstream
+             if low in seen or any(low in s or s in low for s in seen):
+                 continue
+             seen.add(low)
+             surfaces.append(cand)
+-        if len(surfaces) < key:
++        if len(surfaces) < k:
+             raise RuntimeError("vocab exhausted while sampling distinct names")
+ 
+         ents = [{"key": chr(65 + j), "surface": s,
+                  "type": "GROUP" if s in group_set else "DRUG"}
+                 for j, s in enumerate(surfaces)]
+         keys = [e["key"] for e in ents]
+-        by_key = {e["key"]: e for e in ents}
+         pairs = list(itertools.combinations(keys, 2))
+ 
+-        n_pos = _pick(N_POSITIVES_BY_K[key], rng)
++        n_pos = _pick(N_POSITIVES_BY_K[k], rng)
+ 
+         positives = []
+         if n_pos >= 1:
+@@ -382,16 +467,6 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+         asserts = [{"between": [a, b], "label": label, "content": content}
+                    for a, b in positives]
+ 
+-        style = _sample_style(register, label, rng)
+-
+-        participating = {x for p in positives for x in p}
+-        non_participants = [e["key"] for e in ents if e["key"] not in participating]
+-        cap = 2 if positives else max(1, len(non_participants) // 3)
+-        candidates = rng.sample(non_participants, min(len(non_participants), cap))
+-        roled = [key for key in candidates if rng.random() < P_ROLE]
+-        roles = _assign_roles(roled, rng)
+-        role_pos = _pick(ROLE_POS, rng) if (roles and asserts) else None
+-
+         matrix = {f"{a}|{b}": "NONE" for a, b in pairs}
+         for asrt in asserts:
+             a, b = sorted(asrt["between"])
+@@ -402,42 +477,47 @@ def make_v14_specs(n, vocab, seed=0, composition="prior"):
+             "register": register,
+             "entities": ents,
+             "asserts": asserts,
+-            "style": style,
+-            "roles": roles,
+-            "role_pos": role_pos,
++            "style": _sample_style(register, label, rng),
+             "scene": rng.choice(SCENES[register]),
+             "matrix": matrix,
+         })
+     return specs
+ 
+ 
+-def render_v14(spec):
++def render_v15(spec):
+     """One names block with a count: split drug/class blocks lost a class name in three
+     of three samples, and the inline type marker was written into sentences. Style
+-    renders last, so the model knows what it is styling before it is told how."""
++    renders last, so the model knows what it is styling before it is told how.
++
++    No "other drugs" block in v15. Non-participants are placed by the scene, not by a
++    per-drug code, because per-drug marking is what made role language discriminative.
++
++    A second statement renders as agent and affected only. v14 repeated the whole
++    content block, which invited "X inhibits ... and Y inhibits ..." as two clauses.
++    """
+     by_key = {e["key"]: e for e in spec["entities"]}
+     names = [(e["surface"], "") for e in spec["entities"]]
+     blocks = [(f"names to use, all {len(names)}", names)]
+ 
+     for n, asrt in enumerate(spec["asserts"]):
+         a, b = asrt["between"]
+-        rows = [("scope", SCOPE[asrt["label"]]),
+-                ("agent", by_key[a]["surface"]),
+-                ("affected", by_key[b]["surface"])]
+-        rows += [(kk, vv) for kk, vv in asrt["content"].items() if kk != "_slots"]
+-        head = "statement" if len(spec["asserts"]) == 1 else f"statement {n + 1}"
++        if n == 0:
++            rows = [("scope", SCOPE[asrt["label"]]),
++                    ("agent", by_key[a]["surface"]),
++                    ("affected", by_key[b]["surface"])]
++            rows += [(kk, vv) for kk, vv in asrt["content"].items() if kk != "_slots"]
++            head = "statement" if len(spec["asserts"]) == 1 else "statement 1"
++        else:
++            rows = [("agent", by_key[a]["surface"]),
++                    ("affected", by_key[b]["surface"]),
++                    ("says", "the same as statement 1")]
++            head = f"statement {n + 1}"
+         blocks.append((head, rows))
+ 
+-    if spec["roles"]:
+-        rows = [(by_key[k]["surface"], v["role"]) for k, v in spec["roles"].items()]
+-        if spec["role_pos"]:
+-            rows.append(("these come", f"{spec['role_pos']} the main statement"))
+-        blocks.append(("other drugs", rows))
+-
+     if spec["style"]:
+         blocks.append(("style", list(spec["style"].items())))
+ 
+-    lines = [REGISTER_LINE[spec["register"]], f"these are {spec['scene']}", ""]
++    lines = [REGISTER_LINE[spec["register"]], spec["scene"], ""]
+     for head, rows in blocks:
+         lines.append(head)
+         width = max((len(k) for k, _ in rows), default=0)
+@@ -446,7 +526,7 @@ def render_v14(spec):
+     return "\n".join(lines).rstrip()
+ 
+ 
+-def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
++def make_v15_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+                        reasoning_effort="low", max_output_tokens=1500,
+                        api="responses"):
+     """Returns {sentence}. Nothing else: the label lives in the spec, and asking for it
+@@ -456,6 +536,9 @@ def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+     much of it counting words by hand and restating the register rules; at low it spends
+     ~100 and the sentences are no worse. max_output_tokens bounds a runaway rather than
+     letting it burn the full context, which turns a stall into a fast incomplete.
++
++    api="chat" falls back to chat.completions, which every vLLM worker serves; the
++    Responses route is worker-specific and 404s on some models.
+     """
+     from pydantic import BaseModel
+ 
+@@ -492,19 +575,29 @@ def make_v14_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
+         return Written.model_validate_json(resp.choices[0].message.content).sentence
+ 
+     def sample_fn(spec):
+-        user = render_v14(spec)
++        user = render_v15(spec)
+         return {"sentence": (_responses if api == "responses" else _chat)(user)}
+ 
+     return sample_fn
+ 
+ 
+-def v14_fingerprint():
++def v15_fingerprint():
+     parts = [SYSTEM] + sorted(SCOPE.values())
+     parts += sorted(a for v in SITES.values() for a in v)
++    parts += sorted(a for v in MODES.values() for a in v)
++    parts += sorted(ENZYMES) + sorted(EXPOSURE_NOUN) + sorted(PK_FIGURES)
+     parts += sorted(a for v in HARMS.values() for a in v)
+     parts += sorted(a for v in EFFICACY.values() for a in v)
+     parts += sorted(a for v in ACTIONS.values() for a in v)
+-    parts += sorted(ROLES)
+     parts += sorted(a for v in AXES.values() for a in v)
+     parts += sorted(s for v in SCENES.values() for s in v)
+-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+\ No newline at end of file
++    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
++
++
++# v14 names kept as aliases so existing notebooks and scripts keep working. The v14
++# generator is frozen at its commit; to regenerate it, check out that commit rather than
++# calling these.
++make_v14_specs = make_v15_specs
++render_v14 = render_v15
++make_v14_sample_fn = make_v15_sample_fn
++v14_fingerprint = v15_fingerprint
+\ No newline at end of file
+diff --git a/ddi/resolve.py b/ddi/resolve.py
+index a0f1877..710af88 100644
+--- a/ddi/resolve.py
++++ b/ddi/resolve.py
+@@ -85,7 +85,7 @@ def generation_records(gen_id):
+         rec = {"sentence": text, "register": spec["register"],
+                "label": spec["asserts"][0]["label"] if spec["asserts"] else "NONE",
+                "n_entities": len(spec["entities"]),
+-               "role_groups": [v["group"] for v in spec["roles"].values()],
++               "role_groups": [v["group"] for v in spec.get("roles", {}).values()],
+                "role_pos_requested": spec.get("role_pos"),
+                "positive_span": None, "role_spans": [], "sep_achieved": None}
+ 
+@@ -98,7 +98,7 @@ def generation_records(gen_id):
+                 # span distribution the classifier actually sees
+                 rec["sep_achieved"] = sum(1 for k, p in pos.items()
+                                           if k not in (a, b) and lo < p < hi)
+-        rec["role_spans"] = [pos[k] for k in spec["roles"] if pos.get(k, -1) >= 0]
++        rec["role_spans"] = [pos[k] for k in spec.get("roles", {}) if pos.get(k, -1) >= 0]
+         out.append(rec)
+     return out

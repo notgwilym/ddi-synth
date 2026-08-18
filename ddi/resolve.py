@@ -85,7 +85,7 @@ def generation_records(gen_id):
         rec = {"sentence": text, "register": spec["register"],
                "label": spec["asserts"][0]["label"] if spec["asserts"] else "NONE",
                "n_entities": len(spec["entities"]),
-               "role_groups": [v["group"] for v in spec["roles"].values()],
+               "role_groups": [v["group"] for v in spec.get("roles", {}).values()],
                "role_pos_requested": spec.get("role_pos"),
                "positive_span": None, "role_spans": [], "sep_achieved": None}
 
@@ -98,7 +98,7 @@ def generation_records(gen_id):
                 # span distribution the classifier actually sees
                 rec["sep_achieved"] = sum(1 for k, p in pos.items()
                                           if k not in (a, b) and lo < p < hi)
-        rec["role_spans"] = [pos[k] for k in spec["roles"] if pos.get(k, -1) >= 0]
+        rec["role_spans"] = [pos[k] for k in spec.get("roles", {}) if pos.get(k, -1) >= 0]
         out.append(rec)
     return out
 
