@@ -85,6 +85,8 @@ def _f_no_evidence(ents, rng):
                           "no data exist for this combination"]))],
             "avoid": ["asserting that no interaction occurs; the point is that nobody "
                       "looked, not that the answer is no"],
+            "guard": ["not saying that any listed drug was studied with, or affects, "
+                      "the pair named here"],
             "positives": [], "focus": [a, b]}
 
 
@@ -102,7 +104,7 @@ def _f_single_drug_effect(ents, rng):
             "says": [("subject", f"{{{a}}}"),
                      ("what it produced", _alias(HARM, rng)[1]),
                      ("detail", rng.choice(HARM_EXTENT))],
-            "avoid": ["naming any other listed drug as causing, preventing or changing "
+            "guard": ["naming any other listed drug as causing, preventing or changing "
                       "this"],
             "positives": [], "focus": [a]}
 
@@ -124,7 +126,7 @@ def _f_comparative(ents, rng):
                           ["one appears superior", "the values differ",
                            "one was more effective in a subset",
                            "corresponding values were in a different range"]))],
-            "avoid": ["stating that one drug affects the other; they are being measured "
+            "guard": ["stating that one drug affects the other; they are being measured "
                       "side by side, not combined"],
             "positives": [], "focus": [a, b]}
 
@@ -144,7 +146,7 @@ def _f_lab_interference(ents, rng):
                           "a bioassay for antibacterial levels",
                           "a colorimetric determination",
                           "a false-positive reaction in a urine test"]))],
-            "avoid": ["naming any other listed drug as affected"],
+            "guard": ["naming any other listed drug as affected by this"],
             "positives": [], "focus": [a]}
 
 
@@ -176,7 +178,7 @@ def _f_drug_property(ents, rng):
                     ["an active ingredient of a named class",
                      "a fixed-dose combination of its components"]))]
     return {"kind": "none_single", "says": says,
-            "avoid": ["naming any other listed drug as affected by this"],
+            "guard": ["naming any other listed drug as affected by this"],
             "positives": [], "focus": [a]}
 
 
@@ -210,7 +212,9 @@ P_SECOND_IS_NEGATIVE = 0.75
 
 P_UNLISTED_TARGET = 0.26
 
-P_LIST_TARGET = 0.55
+P_LIST_TARGET = 0.70
+
+LIST_MEMBERS = [2, 2, 3, 3]
 
 UNLISTED_TARGETS = ["another drug that is not named in this sentence",
                     "drugs of a class that is not named in this sentence",
@@ -219,7 +223,7 @@ UNLISTED_TARGETS = ["another drug that is not named in this sentence",
                     "an endogenous substance"]
 
 
-def _to_list_target(built, ents, rng):
+def _to_list_target(built, ents, rng, reserved=()):
     """Expand the thing being acted on into a list, and give every member the label.
 
     The corpus's positive sentences carry far more than one positive pair, because the
@@ -230,16 +234,17 @@ def _to_list_target(built, ents, rng):
     if not built["positives"] or len(built["focus"]) < 2:
         return built
     a, b, lab = built["positives"][0]
-    spare = [e["key"] for e in ents if e["key"] not in built["focus"]]
+    spare = [e["key"] for e in ents
+             if e["key"] not in built["focus"] and e["key"] not in reserved]
     if not spare:
         return built
     rng.shuffle(spare)
-    members = spare[:rng.choice([1, 2, 2, 3])]
+    members = spare[:rng.choice(LIST_MEMBERS)]
     pos = list(built["positives"])
     for m in members:
         pos.append((a, m, lab))
     says = list(built["says"]) + [
-        ("and also acts on", ", ".join(f"{{{m}}}" for m in members))]
+        ("the same holds for", ", ".join(f"{{{m}}}" for m in members))]
     return {**built, "says": says, "positives": pos, "variant": "list_target",
             "focus": sorted(set(built["focus"]) | set(members))}
 
@@ -270,7 +275,7 @@ def _to_unlisted(built, rng):
     shape = swap(built["shape"]) if built.get("shape") else None
     return {**built, "says": says, "shape": shape, "positives": [], "focus": [keep],
             "variant": "unlisted",
-            "avoid": list(built.get("avoid", [])) + [
+            "guard": list(built.get("guard", [])) + [
                 "naming any of the other listed drugs as the thing affected here"]}
 
 
@@ -319,18 +324,22 @@ def _apply_modifiers(built, ents, mods, rng):
         marker = rng.choice(["including", "such as", "e.g."])
         extra.append(("expand", f"{{{host}}}, {marker} {{{member}}}"))
         built.setdefault("appositive_pairs", []).append((host, member))
+        built.setdefault("consumed", set()).add(member)
     if "coordinate" in mods and spare:
         partner = spare.pop(rng.randrange(len(spare)))
         if focus:
             host = sorted(focus)[0]
             extra.append(("coordinate", f"{{{host}}} and {{{partner}}} together"))
             built.setdefault("coordinate_pairs", []).append((host, partner))
+            built.setdefault("consumed", set()).add(partner)
     if "sequential" in mods:
         extra.append(("timing", rng.choice(
             ["with a gap between the two", "one stopped before the other started",
              "one taken some hours after the other"])))
     if "regimen_background" in mods and spare:
-        extra.append(("also present", ", ".join(f"{{{k}}}" for k in spare[:2])))
+        listed = spare[:2]
+        extra.append(("also present", ", ".join(f"{{{k}}}" for k in listed)))
+        built.setdefault("consumed", set()).update(listed)
     if "dose_detail" in mods:
         extra.append(("include", "doses or concentrations in parentheses"))
     if "fragment" in mods:
@@ -345,20 +354,28 @@ def _compose(a, b):
     """Two assertions in one sentence. `avoid` is dropped: v17's effect frame forbids
     mentioning concentrations while its mechanism frame requires them, so composing them
     with both avoid blocks intact would issue contradictory instructions."""
-    keep_avoid = [x for src in (a, b) if src.get("variant") == "unlisted"
-                  for x in src.get("avoid", []) if "listed drug" in x]
+    seen, pos = set(), []
+    for x, y, lab in list(a["positives"]) + list(b["positives"]):
+        key = (min(x, y), max(x, y))
+        if key in seen:
+            continue
+        seen.add(key)
+        pos.append((x, y, lab))
     return {"kind": a["kind"],
             "variants": [v for v in (a.get("variant"), b.get("variant")) if v],
             "shape": a.get("shape") or b.get("shape"),
             "says_groups": [(a["focus"], a["says"]), (b["focus"], b["says"])],
-            "says": [], "avoid": sorted(set(keep_avoid)),
-            "positives": list(a["positives"]) + list(b["positives"]),
+            "says": [], "avoid": [],
+            "guard": sorted(set(a.get("guard", [])) | set(b.get("guard", []))),
+            "positives": pos,
             "focus": sorted(set(a["focus"]) | set(b["focus"]))}
 
 
 N_ENTITIES = {2: 0.52, 3: 0.24, 4: 0.10, 5: 0.06, 6: 0.04, 7: 0.02, 8: 0.01, 10: 0.01}
 
-# Three quantities cannot all be matched at once. Corpus mention counts, corpus modifier
+# Pair positive rate lands near 0.125 against the corpus's 0.162 and cannot be closed
+# without breaking something measured. Three quantities are jointly inconsistent under
+# assertions that bind a bounded number of pairs. Corpus mention counts, corpus modifier
 # rates and corpus pair positive rate are jointly inconsistent under one-positive-pair
 # assertions: at measured entity counts and measured appositive and coordinate rates the
 # pair positive rate lands near 0.11 against the corpus's 0.162. v17 hit 0.162 exactly by
@@ -420,7 +437,11 @@ def fingerprint():
     parts += sorted(ROLE_HINTS.values()) + sorted(UNLISTED_TARGETS)
     parts += [f"{k}={v}" for k, v in sorted(N_ENTITIES.items())]
     parts += [str(P_SECOND_ASSERTION), str(P_UNLISTED_TARGET), str(P_LIST_TARGET),
-              str(P_ROLE)]
+              str(P_ROLE), str(LIST_MEMBERS), str(P_SECOND_IS_NEGATIVE)]
+    parts += sorted(x for a in ASSERTIONS.values()
+                    for x in (a["f"](
+                        [{"key": k, "surface": k, "type": "DRUG"} for k in "ABCD"],
+                        random.Random(0)).get("guard") or []))
     parts += [f"{k}={v}" for k, v in sorted(MODIFIERS.items(), key=lambda x: x[0])]
     return hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest()[:12]
 
@@ -482,18 +503,28 @@ def make_specs(n, vocab, seed=0):
                 mods.add(name)
 
         built = ASSERTIONS[a_name]["f"](ents, rng)
+
+        sec = None
+        if second:
+            free = [e for e in ents if e["key"] not in built["focus"]]
+            if len(free) >= ASSERTIONS[second]["n"]:
+                sec = ASSERTIONS[second]["f"](free, rng)
+            else:
+                second = None
+
+        reserved = set(sec["focus"]) if sec else set()
         if rng.random() < P_UNLISTED_TARGET:
             built = _to_unlisted(built, rng)
         elif rng.random() < P_LIST_TARGET:
-            built = _to_list_target(built, ents, rng)
-        if second:
-            sec = ASSERTIONS[second]["f"](ents, rng)
+            built = _to_list_target(built, ents, rng, reserved=reserved)
+
+        if sec:
             if rng.random() < P_UNLISTED_TARGET:
                 sec = _to_unlisted(sec, rng)
             built = _compose(built, sec)
         else:
             built = {**built, "says_groups": [(built["focus"], built["says"])],
-                     "says": []}
+                     "says": [], "guard": built.get("guard", [])}
         built = _apply_modifiers(built, ents, mods, rng)
 
         keys_now = _keys(ents)
@@ -518,6 +549,8 @@ def make_specs(n, vocab, seed=0):
         spare = [x for x in keys if x not in focus
                  and not any(e["key"] == x and e.get("duplicate_of")
                              for e in ents)]
+        consumed = built.get("consumed", set())
+        spare = [x for x in spare if x not in consumed]
         orphans = [x for x in spare if x not in named]
         rest = [x for x in spare if x in named]
         roled = orphans + [x for x in rest if rng.random() < P_ROLE]
@@ -531,21 +564,31 @@ def make_specs(n, vocab, seed=0):
             used.add(r)
             roles[x] = r
 
-        matrix = {f"{a}|{b}": "NONE" for a, b in itertools.combinations(keys, 2)}
-        for a, b, lab in built["positives"]:
-            matrix[f"{min(a, b)}|{max(a, b)}"] = lab
+        positives = list(built["positives"])
         for host, member in built.get("appositive_pairs", []):
-            for a, b, lab in built["positives"]:
+            for a, b, lab in list(positives):
                 for other in (a, b):
-                    if other not in (host, member):
-                        p = f"{min(member, other)}|{max(member, other)}"
-                        matrix[p] = lab
+                    if other not in (host, member) and host in (a, b):
+                        positives.append((member, other, lab))
         for host, partner in built.get("coordinate_pairs", []):
-            for a, b, lab in built["positives"]:
+            for a, b, lab in list(positives):
                 if host in (a, b):
                     other = b if a == host else a
-                    p = f"{min(partner, other)}|{max(partner, other)}"
-                    matrix[p] = lab
+                    if other != partner:
+                        positives.append((partner, other, lab))
+
+        seen, deduped = set(), []
+        for a, b, lab in positives:
+            key = (min(a, b), max(a, b))
+            if key in seen or a == b:
+                continue
+            seen.add(key)
+            deduped.append((a, b, lab))
+        positives = deduped
+
+        matrix = {f"{a}|{b}": "NONE" for a, b in itertools.combinations(keys, 2)}
+        for a, b, lab in positives:
+            matrix[f"{min(a, b)}|{max(a, b)}"] = lab
 
         specs.append({
             "spec_index": i,
@@ -562,10 +605,11 @@ def make_specs(n, vocab, seed=0):
             "says": built.get("extras", []),
             "says_groups": built.get("says_groups", []),
             "avoid": built.get("avoid", []),
+            "guard": sorted(built.get("guard", [])),
             "positives": [{"between": [a, b], "label": lab}
-                          for a, b, lab in built["positives"]],
+                          for a, b, lab in positives],
             "asserts": [{"between": [a, b], "label": lab}
-                        for a, b, lab in built["positives"]],
+                        for a, b, lab in positives],
             "roles": roles,
             "repeat": built.get("repeat"),
             "scene": rng.choice(SCENES[register]) if rng.random() < P_SCENE else None,
@@ -636,8 +680,9 @@ def render(spec):
         lines += [f"  {k.ljust(w)}  {sub(v)}" for k, v in spec["says"]]
         lines.append("")
 
-    if spec["avoid"]:
-        lines += ["avoid"] + [f"  {sub(s)}" for s in spec["avoid"]] + [""]
+    guards = spec.get("guard") or []
+    if spec["avoid"] or guards:
+        lines += ["avoid"] + [f"  {sub(s)}" for s in list(spec["avoid"]) + guards] + [""]
 
     if spec.get("repeat"):
         lines += ["name twice",
