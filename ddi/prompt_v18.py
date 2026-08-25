@@ -85,7 +85,7 @@ def _f_no_evidence(ents, rng):
                           "no data exist for this combination"]))],
             "avoid": ["asserting that no interaction occurs; the point is that nobody "
                       "looked, not that the answer is no"],
-            "guard": ["not saying that any listed drug was studied with, or affects, "
+            "guard": ["naming any other listed drug as studied with, or as affecting, "
                       "the pair named here"],
             "positives": [], "focus": [a, b]}
 
@@ -223,7 +223,7 @@ UNLISTED_TARGETS = ["another drug that is not named in this sentence",
                     "an endogenous substance"]
 
 
-def _to_list_target(built, ents, rng, reserved=()):
+def _to_list_target(built, ents, rng, reserved=(), n_members=None):
     """Expand the thing being acted on into a list, and give every member the label.
 
     The corpus's positive sentences carry far more than one positive pair, because the
@@ -239,7 +239,7 @@ def _to_list_target(built, ents, rng, reserved=()):
     if not spare:
         return built
     rng.shuffle(spare)
-    members = spare[:rng.choice(LIST_MEMBERS)]
+    members = spare[:(n_members or rng.choice(LIST_MEMBERS))]
     pos = list(built["positives"])
     for m in members:
         pos.append((a, m, lab))
@@ -354,6 +354,8 @@ def _compose(a, b):
     """Two assertions in one sentence. `avoid` is dropped: v17's effect frame forbids
     mentioning concentrations while its mechanism frame requires them, so composing them
     with both avoid blocks intact would issue contradictory instructions."""
+    groups = [(a["focus"], a["says"], list(a.get("avoid", [])) + list(a.get("guard", []))),
+              (b["focus"], b["says"], list(b.get("avoid", [])) + list(b.get("guard", [])))]
     seen, pos = set(), []
     for x, y, lab in list(a["positives"]) + list(b["positives"]):
         key = (min(x, y), max(x, y))
@@ -365,8 +367,8 @@ def _compose(a, b):
             "variants": [v for v in (a.get("variant"), b.get("variant")) if v],
             "shape": a.get("shape") or b.get("shape"),
             "says_groups": [(a["focus"], a["says"]), (b["focus"], b["says"])],
-            "says": [], "avoid": [],
-            "guard": sorted(set(a.get("guard", [])) | set(b.get("guard", []))),
+            "says": [], "avoid": [], "guard": [],
+            "groups": groups,
             "positives": pos,
             "focus": sorted(set(a["focus"]) | set(b["focus"]))}
 
@@ -474,7 +476,16 @@ def make_specs(n, vocab, seed=0):
             if pool:
                 second = _pick(pool, rng)
 
-        need = ASSERTIONS[a_name]["n"] + (ASSERTIONS[second]["n"] if second else 0)
+        variant = None
+        n_members = 0
+        if rng.random() < P_UNLISTED_TARGET:
+            variant = "unlisted"
+        elif rng.random() < P_LIST_TARGET:
+            variant = "list_target"
+            n_members = rng.choice(LIST_MEMBERS)
+
+        need = (ASSERTIONS[a_name]["n"] + (ASSERTIONS[second]["n"] if second else 0)
+                + (1 if variant == "list_target" else 0))
         k = max(need, _pick(N_ENTITIES, rng))
 
         surfaces, seen = [], set()
@@ -513,24 +524,27 @@ def make_specs(n, vocab, seed=0):
                 second = None
 
         reserved = set(sec["focus"]) if sec else set()
-        if rng.random() < P_UNLISTED_TARGET:
+        if variant == "unlisted":
             built = _to_unlisted(built, rng)
-        elif rng.random() < P_LIST_TARGET:
-            built = _to_list_target(built, ents, rng, reserved=reserved)
+        elif variant == "list_target":
+            built = _to_list_target(built, ents, rng, reserved=reserved,
+                                    n_members=n_members)
 
         if sec:
             if rng.random() < P_UNLISTED_TARGET:
                 sec = _to_unlisted(sec, rng)
             built = _compose(built, sec)
         else:
-            built = {**built, "says_groups": [(built["focus"], built["says"])],
-                     "says": [], "guard": built.get("guard", [])}
+            built = {**built, "says": [],
+                     "groups": [(built["focus"], built["says"],
+                                 list(built.get("avoid", []))
+                                 + list(built.get("guard", [])))]}
         built = _apply_modifiers(built, ents, mods, rng)
 
         keys_now = _keys(ents)
         focus_now = set(built["focus"])
         named = set()
-        for _, rows in built.get("says_groups", []):
+        for _, rows, _g in built.get("groups", []):
             named |= _referenced(rows)
         named |= _referenced(built["says"]) | focus_now
         if built.get("shape"):
@@ -603,9 +617,9 @@ def make_specs(n, vocab, seed=0):
             "entities": ents,
             "shape": built.get("shape"),
             "says": built.get("extras", []),
-            "says_groups": built.get("says_groups", []),
-            "avoid": built.get("avoid", []),
-            "guard": sorted(built.get("guard", [])),
+            "groups": [[list(f), list(r), list(g)]
+                       for f, r, g in built.get("groups", [])],
+
             "positives": [{"between": [a, b], "label": lab}
                           for a, b, lab in positives],
             "asserts": [{"between": [a, b], "label": lab}
@@ -659,19 +673,23 @@ def render(spec):
         lines += ["arrangement", f"  {sub(spec['shape'])}", ""]
 
     groups = []
-    for keys, says in spec.get("says_groups", []):
+    for keys, says, guard in spec.get("groups", []):
         if not says:
             continue
         names = " and ".join(by_key[k] for k in keys if k in by_key)
         if groups and groups[-1][0] == names:
-            groups[-1] = (names, groups[-1][1] + says)
+            groups[-1] = (names, groups[-1][1] + says, groups[-1][2] + guard)
         else:
-            groups.append((names, says))
+            groups.append((names, says, list(guard)))
 
-    for names, says in groups:
-        lines.append(f"says about {names}" if len(groups) > 1 else "says")
+    multi = len(groups) > 1
+    for names, says, guard in groups:
+        lines.append(f"says about {names}" if multi else "says")
         w = max(len(k) for k, _ in says)
         lines += [f"  {k.ljust(w)}  {sub(v)}" for k, v in says]
+        if guard and multi:
+            lines.append("  avoid")
+            lines += [f"    {sub(g)}" for g in guard]
         lines.append("")
 
     if spec["says"]:
@@ -680,9 +698,8 @@ def render(spec):
         lines += [f"  {k.ljust(w)}  {sub(v)}" for k, v in spec["says"]]
         lines.append("")
 
-    guards = spec.get("guard") or []
-    if spec["avoid"] or guards:
-        lines += ["avoid"] + [f"  {sub(s)}" for s in list(spec["avoid"]) + guards] + [""]
+    if not multi and groups and groups[0][2]:
+        lines += ["avoid"] + [f"  {sub(g)}" for g in groups[0][2]] + [""]
 
     if spec.get("repeat"):
         lines += ["name twice",
