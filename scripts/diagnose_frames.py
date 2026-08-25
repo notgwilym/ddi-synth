@@ -153,13 +153,16 @@ def compare(args):
     print("\nweight is the sampler's target, synth is what it realised, corpus_primary "
           "is the main clause, corpus_any counts secondary constructions too.")
 
-    print("\n== purity: positive rate of pairs in sentences carrying each construction ==")
+    print("\n== purity: how often a sentence carrying each construction has a positive ==")
     cp = gold_frames.corpus_purity(verdicts, pool)
-    _table([{"frame": r["frame"], "n_pairs": r["n_pairs"],
-             "corpus_pos_rate": _pct(r["pos_rate"]),
-             "synth_pos_rate": _pct(synth_purity.get(r["frame"]))} for r in cp],
-           ["frame", "n_pairs", "corpus_pos_rate", "synth_pos_rate"])
-    print("\nEvery synth figure is 0.000 or 1.000. The corpus column is the target.")
+    _table([{"frame": r["frame"], "n_sent": r["n_sent"],
+             "sent_pos": _pct(r["sent_pos_rate"]),
+             "pair_pos": _pct(r["pair_pos_rate"]),
+             "pair_capped": _pct(r["pair_pos_rate_capped"]),
+             "synth_pair_pos": _pct(synth_purity.get(r["frame"]))} for r in cp],
+           ["frame", "n_sent", "sent_pos", "pair_pos", "pair_capped", "synth_pair_pos"])
+    print("\nsent_pos is the target. pair_pos is dominated by megasentences and is shown\n"
+          "only so the gap between it and pair_capped is visible.")
 
     print("\n== how many things a real sentence does at once ==")
     mc = gold_frames.multi_construction_rate(verdicts)
