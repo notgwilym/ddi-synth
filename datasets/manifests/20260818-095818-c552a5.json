@@ -1,0 +1,48 @@
+{
+  "dataset_id": "20260818-095818-c552a5",
+  "created_at": "2026-08-18T09:58:19",
+  "provenance": "synthetic",
+  "generator": {
+    "prompt_sha": "339fe4c16c0b",
+    "model": "gpt-oss-120b",
+    "reasoning_effort": "low",
+    "version": "v17",
+    "frames_disabled": [
+      "study_only"
+    ],
+    "note": "frames; negatives as constructions, slot-based says",
+    "gen_id": "v17-full"
+  },
+  "vocab_source": {
+    "name": "drugbank+atc",
+    "sources": [
+      "drugbank",
+      "atc"
+    ],
+    "p_group": 0.3,
+    "n_drugs": 14932,
+    "n_groups": 425,
+    "sha256": "089ea59a2351"
+  },
+  "negative_strategy": null,
+  "parent_id": null,
+  "render_mode": "markers",
+  "seed": 0,
+  "size": {
+    "n_instances": 23880,
+    "n_sentences": 5702
+  },
+  "label_distribution": {
+    "NONE": 19963,
+    "ADVISE": 694,
+    "EFFECT": 1956,
+    "INT": 176,
+    "MECHANISM": 1091
+  },
+  "data_root": "/mnt/primary/synth_data_creation/datasets/instances",
+  "sha256": "3d63ab04b92683c31d4a88f8e7df17a1e8add136076d2fd172b4ffd1896f8755",
+  "leakage_report": null,
+  "git_sha": "8027845fe879207a270901e60f4a38bdb297b036",
+  "git_dirty": true,
+  "notes": "v17, 6000 specs"
+}

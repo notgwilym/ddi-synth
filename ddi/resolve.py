@@ -1,8 +1,11 @@
-"""Stage-2 resolver for v14, plus the diagnostics the gates need.
+"""Stage-2 resolver, plus the diagnostics the gates need.
 
 Labels come from the spec, not from model output, because asking for a label back means
 putting label vocabulary in the prompt. build_dataset_from_raw already has the spec in
 hand: it reads rec["spec"] for the register.
+
+Handles both spec shapes. v14/v15/v16 put asserted pairs under "asserts"; v17 frames put
+them under "positives". Everything else downstream is identical.
 
 Matching is deliberately tolerant. _find_nth already falls back to case-insensitive, and
 every rejected sample is a wasted generation call, which is 90% of the loop. Rejects are
@@ -16,10 +19,16 @@ from .synth import (RAW, Rejected, SynthDoc, SynthRelation, _normalise,
                     _make_pair_instances_synth)
 
 
+def _asserted(spec):
+    """v17 calls them positives, earlier versions called them asserts. Same shape:
+    {"between": [key, key], "label": str}."""
+    return spec.get("asserts") or spec.get("positives") or []
+
+
 def v14_sample_to_instances(sample, sent_id_base, register="synthetic", spec=None,
                             max_words=120, mode="markers"):
     if spec is None:
-        raise Rejected("v14 resolver needs the spec")
+        raise Rejected("resolver needs the spec")
     if not isinstance(sample, dict):
         raise Rejected("no sample returned")
 
@@ -41,7 +50,7 @@ def v14_sample_to_instances(sample, sent_id_base, register="synthetic", spec=Non
 
     by_key = {e["key"]: e["surface"].lower() for e in spec["entities"]}
     rels = []
-    for asrt in spec["asserts"]:
+    for asrt in _asserted(spec):
         k1, k2 = asrt["between"]
         m1 = [e for e in ents if name_of[id(e)] == by_key[k1]]
         m2 = [e for e in ents if name_of[id(e)] == by_key[k2]]
@@ -72,8 +81,12 @@ def _iter_raw(gen_id):
 
 def generation_records(gen_id):
     """Per-sentence records for the gates: where role-bearing drugs sit relative to the
-    asserted pair, whether the requested position was honoured, and the span actually
-    achieved between the pair."""
+    asserted pair, and the span actually achieved between the pair.
+
+    v17 specs carry a frame and no role_pos, so those fields come back None. The
+    role-position gate then computes over an empty list and returns 0.0, which is
+    correct: there is no requested position to have been ignored.
+    """
     out = []
     for spec, text in _iter_raw(gen_id):
         if not text:
@@ -81,32 +94,36 @@ def generation_records(gen_id):
         low = text.lower()
         by_key = {e["key"]: e["surface"].lower() for e in spec["entities"]}
         pos = {k: low.find(s) for k, s in by_key.items()}
+        asserts = _asserted(spec)
 
         rec = {"sentence": text, "register": spec["register"],
-               "label": spec["asserts"][0]["label"] if spec["asserts"] else "NONE",
+               "frame": spec.get("frame"),
+               "label": asserts[0]["label"] if asserts else "NONE",
                "n_entities": len(spec["entities"]),
-               "role_groups": [v["group"] for v in spec.get("roles", {}).values()],
+               "role_groups": [],
                "role_pos_requested": spec.get("role_pos"),
                "positive_span": None, "role_spans": [], "sep_achieved": None}
 
-        if spec["asserts"]:
-            a, b = spec["asserts"][0]["between"]
-            if pos[a] >= 0 and pos[b] >= 0:
+        if asserts:
+            a, b = asserts[0]["between"]
+            if pos.get(a, -1) >= 0 and pos.get(b, -1) >= 0:
                 lo, hi = sorted((pos[a], pos[b]))
                 rec["positive_span"] = (lo + hi) / 2
                 # separation is no longer requested; measured anyway, since it is the
                 # span distribution the classifier actually sees
                 rec["sep_achieved"] = sum(1 for k, p in pos.items()
                                           if k not in (a, b) and lo < p < hi)
-        rec["role_spans"] = [pos[k] for k in spec.get("roles", {}) if pos.get(k, -1) >= 0]
+        rec["role_spans"] = [pos[k] for k in spec.get("roles", {})
+                             if pos.get(k, -1) >= 0]
         out.append(rec)
     return out
 
 
 def role_position_report(records):
-    """Did the model put the non-participants where it was told? Left free they landed
-    after the assertion 96% of the time, which lets a classifier read clause position
-    instead of the entity markers."""
+    """Did the model put the non-participants where it was told? Left free in v14 they
+    landed after the assertion 96% of the time, which lets a classifier read clause
+    position instead of the entity markers. v17 does not request a position, so this
+    reports nothing for it."""
     from collections import Counter, defaultdict
     got = defaultdict(Counter)
     for r in records:
@@ -115,6 +132,9 @@ def role_position_report(records):
             continue
         for s in r.get("role_spans", []):
             got[req]["before" if s < anchor else "after"] += 1
+    if not got:
+        print("no role positions requested")
+        return
     print(f"{'requested':>10}  {'n':>5}  achieved")
     for req in sorted(got):
         row = got[req]
