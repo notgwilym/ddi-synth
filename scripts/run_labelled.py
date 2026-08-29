@@ -99,22 +99,30 @@ def label(args):
 
 
 def agree(args):
+    label_real.error_report(RAW / f"{args.gen_id}.jsonl")
+    print()
     label_real.agreement(RAW / f"{args.gen_id}.jsonl")
+
+
+def errors(args):
+    label_real.error_report(RAW / f"{args.gen_id}.jsonl")
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["generate", "build", "label", "agree"])
+    p.add_argument("cmd", choices=["generate", "build", "label", "agree",
+                                   "errors"])
     p.add_argument("--gen-id", required=True)
     p.add_argument("--n", type=int, default=6000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--split-seed", type=int, default=42)
     p.add_argument("--effort", default="high")
-    p.add_argument("--max-tokens", type=int, default=16000)
+    p.add_argument("--max-tokens", type=int, default=8000)
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--api", default="responses")
     args = p.parse_args()
-    {"generate": generate, "build": build, "label": label, "agree": agree}[args.cmd](args)
+    {"generate": generate, "build": build, "label": label, "agree": agree,
+     "errors": errors}[args.cmd](args)
 
 
 if __name__ == "__main__":
