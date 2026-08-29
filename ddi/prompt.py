@@ -77,7 +77,7 @@ LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
 SYSTEM = """You write one sentence of biomedical text for a drug interaction corpus.
 
 Each request lists drug names and, usually, a short block of facts to build the sentence
-from. The facts are given as separate items, not as a finished phrase. Compose the
+from. The facts are given as instructions, not as a finished phrase. RULE: Do not copy the instructions verbatim. Compose the
 sentence yourself: choose the verb, the clause order and the connectives.
 
 - Use every name listed, spelled exactly as given, and no other drug names.
@@ -89,7 +89,7 @@ sentence yourself: choose the verb, the clause order and the connectives.
 - Follow any "avoid" line strictly. A sentence that breaks it cannot be used.
 - Where the request does not constrain something, vary it. Do not open every sentence
   the same way and do not reuse the same sentence shape.
-- The drugs listed may not be sensible together in real practice. Write it as asked.
+- The drugs listed may not be sensible together in real practice. Write them as if they were, and do not mention that they are not.
 - The field names in the request are instructions to you, not words for the sentence.
 - Match verb agreement to the name; some names are plural.
 - One sentence. Plain prose, no markdown."""

@@ -202,19 +202,22 @@ ASSERTIONS = {
     "contradictory":     {"n": 2, "w": 0.005, "f": _v17._f_contradictory},
 }
 
-P_SECOND_ASSERTION = 0.40
+P_SECOND_ASSERTION = 0.55
 
 NEGATIVE_ASSERTIONS = {"denial", "study_only", "drug_property", "no_evidence",
                        "single_drug_effect", "comparative", "lab_interference",
                        "incompatible"}
 
-P_SECOND_IS_NEGATIVE = 0.75
+P_SECOND_IS_NEGATIVE = 0.55
 
 P_UNLISTED_TARGET = 0.26
 
-P_LIST_TARGET = 0.70
+P_LIST_TARGET = 1.00
 
 LIST_MEMBERS = [2, 2, 3, 3]
+
+# ROW_LABEL is gone. Naming the slot in an appended row did not make the rendered
+# clause slot-determinate; the member now goes into the object slot itself.
 
 UNLISTED_TARGETS = ["another drug that is not named in this sentence",
                     "drugs of a class that is not named in this sentence",
@@ -223,13 +226,26 @@ UNLISTED_TARGETS = ["another drug that is not named in this sentence",
                     "an endogenous substance"]
 
 
-def _to_list_target(built, ents, rng, reserved=(), n_members=None):
-    """Expand the thing being acted on into a list, and give every member the label.
+def _to_list_target(built, ents, rng, reserved=(), n_members=None, name=None):
+    """Expand the object of the assertion into a list, in the slot it already occupies.
 
-    The corpus's positive sentences carry far more than one positive pair, because the
-    object of the assertion is routinely a list: "drugs that diminish anticoagulant
-    response include A; B; C". v17 could only do this through `appositive`, which is why
-    its positive rate had to be tuned elsewhere to compensate.
+    The corpus makes lists a syntactic constituent of the predicate: "drugs that diminish
+    anticoagulant response include A; B; C". The list sits in the object slot and the slot
+    is therefore unambiguous.
+
+    v18's first attempt appended a separate row, which the model rendered as an elliptical
+    afterthought clause: "fingolimod acted on cefdinir, and the same effect was observed
+    with Modakafusp alfa". That is a different construction and it does not determine which
+    slot the member fills. Gold marked fingolimod-Modakafusp; the natural reading is that
+    Modakafusp is a second agent acting on cefdinir, which gold marks NONE. Missed rate ran
+    0.339 at one member, 0.714 at two and 1.000 at three, against 0.208 on plain specs, and
+    the flagged rate rose too, so both error directions were elevated. Naming the slot in
+    the row label does not help, because the model still renders an extra clause
+    elliptically; that is what English does with it.
+
+    So the member goes into the existing slot by substitution, the same mechanism that
+    fixed `unlisted`, with "each of" to force the distributive reading against the anchor
+    rather than a symmetric one.
     """
     if not built["positives"] or len(built["focus"]) < 2:
         return built
@@ -240,12 +256,21 @@ def _to_list_target(built, ents, rng, reserved=(), n_members=None):
         return built
     rng.shuffle(spare)
     members = spare[:(n_members or rng.choice(LIST_MEMBERS))]
-    pos = list(built["positives"])
-    for m in members:
-        pos.append((a, m, lab))
-    says = list(built["says"]) + [
-        ("the same holds for", ", ".join(f"{{{m}}}" for m in members))]
-    return {**built, "says": says, "positives": pos, "variant": "list_target",
+
+    listed = [f"{{{b}}}"] + [f"{{{m}}}" for m in members]
+    phrase = "each of " + ", ".join(listed[:-1]) + " and " + listed[-1]
+
+    def swap(t):
+        return t.replace("{" + b + "}", phrase)
+
+    says = [(k, swap(v)) for k, v in built["says"]]
+    shape = swap(built["shape"]) if built.get("shape") else None
+    if not any(phrase in v for _, v in says) and phrase not in (shape or ""):
+        return built                      # the object slot was not a plain {b}; skip
+
+    pos = list(built["positives"]) + [(a, m, lab) for m in members]
+    return {**built, "says": says, "shape": shape, "positives": pos,
+            "variant": "list_target",
             "focus": sorted(set(built["focus"]) | set(members))}
 
 
@@ -365,7 +390,7 @@ def _compose(a, b):
         pos.append((x, y, lab))
     return {"kind": a["kind"],
             "variants": [v for v in (a.get("variant"), b.get("variant")) if v],
-            "shape": a.get("shape") or b.get("shape"),
+            "shape": a.get("shape"),
             "says_groups": [(a["focus"], a["says"]), (b["focus"], b["says"])],
             "says": [], "avoid": [], "guard": [],
             "groups": groups,
@@ -440,6 +465,7 @@ def fingerprint():
     parts += [f"{k}={v}" for k, v in sorted(N_ENTITIES.items())]
     parts += [str(P_SECOND_ASSERTION), str(P_UNLISTED_TARGET), str(P_LIST_TARGET),
               str(P_ROLE), str(LIST_MEMBERS), str(P_SECOND_IS_NEGATIVE)]
+    parts += ["each of"]
     parts += sorted(x for a in ASSERTIONS.values()
                     for x in (a["f"](
                         [{"key": k, "surface": k, "type": "DRUG"} for k in "ABCD"],
@@ -484,9 +510,10 @@ def make_specs(n, vocab, seed=0):
             variant = "list_target"
             n_members = rng.choice(LIST_MEMBERS)
 
-        need = (ASSERTIONS[a_name]["n"] + (ASSERTIONS[second]["n"] if second else 0)
-                + (1 if variant == "list_target" else 0))
+        need = ASSERTIONS[a_name]["n"] + (ASSERTIONS[second]["n"] if second else 0)
         k = max(need, _pick(N_ENTITIES, rng))
+        if variant == "list_target" and k <= need:
+            variant = None
 
         surfaces, seen = [], set()
         for _ in range(400):
@@ -528,7 +555,7 @@ def make_specs(n, vocab, seed=0):
             built = _to_unlisted(built, rng)
         elif variant == "list_target":
             built = _to_list_target(built, ents, rng, reserved=reserved,
-                                    n_members=n_members)
+                                    n_members=n_members, name=a_name)
 
         if sec:
             if rng.random() < P_UNLISTED_TARGET:

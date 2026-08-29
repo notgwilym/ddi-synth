@@ -1,0 +1,485 @@
+diff --git a/ddi/frame_diag.py b/ddi/frame_diag.py
+index 708f05c..2c0e4dd 100644
+--- a/ddi/frame_diag.py
++++ b/ddi/frame_diag.py
+@@ -185,7 +185,7 @@ def _sentence_rows(instances, mask=True):
+     return out
+ 
+ 
+-def frame_recoverability(instances, seed=0, mask=True):
++def frame_recoverability(instances, seed=0, mask=True, min_count=6):
+     """A: can a bag of words name the frame from the sentence alone.
+ 
+     Entity spans are masked by default so the answer cannot come from the vocabulary
+@@ -198,8 +198,20 @@ def frame_recoverability(instances, seed=0, mask=True):
+     from sklearn.model_selection import train_test_split
+ 
+     rows = [r for r in _sentence_rows(instances, mask=mask) if r["frame"]]
+-    if len({r["frame"] for r in rows}) < 2:
+-        return {}
++
++    # A frame seen once cannot be stratified, and a frame seen a handful of times
++    # cannot be measured. At smoke-run sizes the rare assertions (incompatible and
++    # contradictory are weighted 0.005) fall below this; dropping them is right, but
++    # the accuracy that comes back is then over the frames that survived, not all of
++    # them, so it is reported alongside the count.
++    counts = Counter(r["frame"] for r in rows)
++    keep = {f for f, n in counts.items() if n >= min_count}
++    dropped = sorted(set(counts) - keep)
++    rows = [r for r in rows if r["frame"] in keep]
++    if len(keep) < 2 or len(rows) < 20:
++        return {"error": "too few sentences per frame to measure",
++                "n_frames_dropped": len(dropped), "dropped": dropped}
++
+     tr, te = train_test_split(rows, test_size=0.3, random_state=seed,
+                               stratify=[r["frame"] for r in rows])
+ 
+@@ -218,6 +230,7 @@ def frame_recoverability(instances, seed=0, mask=True):
+             "macro_f1": f1_score(yte, pred, average="macro", zero_division=0),
+             "majority_baseline": accuracy_score(yte, [major] * len(yte)),
+             "n_frames": len(set(ytr)), "n_train": len(tr), "n_test": len(te),
++            "n_frames_dropped": len(dropped), "dropped": dropped,
+             "per_frame": _per_frame_recall(yte, pred)}
+ 
+ 
+@@ -246,7 +259,7 @@ def _best_macro_f1(y, score):
+     return best, best_t
+ 
+ 
+-def shortcut_via_frame(instances, seed=0, mask=True):
++def shortcut_via_frame(instances, seed=0, mask=True, min_count=6):
+     """C: score every pair by the positive rate of its frame, using no pair information
+     at any point, and see how well that alone separates POS from NONE.
+ 
+@@ -268,6 +281,10 @@ def shortcut_via_frame(instances, seed=0, mask=True):
+     rows = [r for r in instances if r.get("frame")]
+     if not rows:
+         return {}
++    counts = Counter(r["frame"] for r in rows)
++    rows = [r for r in rows if counts[r["frame"]] >= min_count]
++    if len({r["frame"] for r in rows}) < 2:
++        return {"error": "too few sentences per frame to measure"}
+     sents = sorted({r["sent_id"] for r in rows})
+     tr_s, te_s = train_test_split(sents, test_size=0.3, random_state=seed)
+     tr_s, te_s = set(tr_s), set(te_s)
+diff --git a/ddi/prompt.py b/ddi/prompt.py
+index 1e6e91d..d1f2229 100644
+--- a/ddi/prompt.py
++++ b/ddi/prompt.py
+@@ -77,7 +77,7 @@ LABELS = ["ADVISE", "EFFECT", "INT", "MECHANISM"]
+ SYSTEM = """You write one sentence of biomedical text for a drug interaction corpus.
+ 
+ Each request lists drug names and, usually, a short block of facts to build the sentence
+-from. The facts are given as separate items, not as a finished phrase. Compose the
++from. The facts are given as instructions, not as a finished phrase. RULE: Do not copy the instructions verbatim. Compose the
+ sentence yourself: choose the verb, the clause order and the connectives.
+ 
+ - Use every name listed, spelled exactly as given, and no other drug names.
+@@ -89,7 +89,7 @@ sentence yourself: choose the verb, the clause order and the connectives.
+ - Follow any "avoid" line strictly. A sentence that breaks it cannot be used.
+ - Where the request does not constrain something, vary it. Do not open every sentence
+   the same way and do not reuse the same sentence shape.
+-- The drugs listed may not be sensible together in real practice. Write it as asked.
++- The drugs listed may not be sensible together in real practice. Write them as if they were, and do not mention that they are not.
+ - The field names in the request are instructions to you, not words for the sentence.
+ - Match verb agreement to the name; some names are plural.
+ - One sentence. Plain prose, no markdown."""
+diff --git a/ddi/prompt_v18.py b/ddi/prompt_v18.py
+index 4e5b450..8f0888f 100644
+--- a/ddi/prompt_v18.py
++++ b/ddi/prompt_v18.py
+@@ -202,20 +202,23 @@ ASSERTIONS = {
+     "contradictory":     {"n": 2, "w": 0.005, "f": _v17._f_contradictory},
+ }
+ 
+-P_SECOND_ASSERTION = 0.40
++P_SECOND_ASSERTION = 0.55
+ 
+ NEGATIVE_ASSERTIONS = {"denial", "study_only", "drug_property", "no_evidence",
+                        "single_drug_effect", "comparative", "lab_interference",
+                        "incompatible"}
+ 
+-P_SECOND_IS_NEGATIVE = 0.75
++P_SECOND_IS_NEGATIVE = 0.55
+ 
+ P_UNLISTED_TARGET = 0.26
+ 
+-P_LIST_TARGET = 0.70
++P_LIST_TARGET = 1.00
+ 
+ LIST_MEMBERS = [2, 2, 3, 3]
+ 
++# ROW_LABEL is gone. Naming the slot in an appended row did not make the rendered
++# clause slot-determinate; the member now goes into the object slot itself.
++
+ UNLISTED_TARGETS = ["another drug that is not named in this sentence",
+                     "drugs of a class that is not named in this sentence",
+                     "a laboratory measurement",
+@@ -223,13 +226,26 @@ UNLISTED_TARGETS = ["another drug that is not named in this sentence",
+                     "an endogenous substance"]
+ 
+ 
+-def _to_list_target(built, ents, rng, reserved=(), n_members=None):
+-    """Expand the thing being acted on into a list, and give every member the label.
++def _to_list_target(built, ents, rng, reserved=(), n_members=None, name=None):
++    """Expand the object of the assertion into a list, in the slot it already occupies.
++
++    The corpus makes lists a syntactic constituent of the predicate: "drugs that diminish
++    anticoagulant response include A; B; C". The list sits in the object slot and the slot
++    is therefore unambiguous.
++
++    v18's first attempt appended a separate row, which the model rendered as an elliptical
++    afterthought clause: "fingolimod acted on cefdinir, and the same effect was observed
++    with Modakafusp alfa". That is a different construction and it does not determine which
++    slot the member fills. Gold marked fingolimod-Modakafusp; the natural reading is that
++    Modakafusp is a second agent acting on cefdinir, which gold marks NONE. Missed rate ran
++    0.339 at one member, 0.714 at two and 1.000 at three, against 0.208 on plain specs, and
++    the flagged rate rose too, so both error directions were elevated. Naming the slot in
++    the row label does not help, because the model still renders an extra clause
++    elliptically; that is what English does with it.
+ 
+-    The corpus's positive sentences carry far more than one positive pair, because the
+-    object of the assertion is routinely a list: "drugs that diminish anticoagulant
+-    response include A; B; C". v17 could only do this through `appositive`, which is why
+-    its positive rate had to be tuned elsewhere to compensate.
++    So the member goes into the existing slot by substitution, the same mechanism that
++    fixed `unlisted`, with "each of" to force the distributive reading against the anchor
++    rather than a symmetric one.
+     """
+     if not built["positives"] or len(built["focus"]) < 2:
+         return built
+@@ -240,12 +256,21 @@ def _to_list_target(built, ents, rng, reserved=(), n_members=None):
+         return built
+     rng.shuffle(spare)
+     members = spare[:(n_members or rng.choice(LIST_MEMBERS))]
+-    pos = list(built["positives"])
+-    for m in members:
+-        pos.append((a, m, lab))
+-    says = list(built["says"]) + [
+-        ("the same holds for", ", ".join(f"{{{m}}}" for m in members))]
+-    return {**built, "says": says, "positives": pos, "variant": "list_target",
++
++    listed = [f"{{{b}}}"] + [f"{{{m}}}" for m in members]
++    phrase = "each of " + ", ".join(listed[:-1]) + " and " + listed[-1]
++
++    def swap(t):
++        return t.replace("{" + b + "}", phrase)
++
++    says = [(k, swap(v)) for k, v in built["says"]]
++    shape = swap(built["shape"]) if built.get("shape") else None
++    if not any(phrase in v for _, v in says) and phrase not in (shape or ""):
++        return built                      # the object slot was not a plain {b}; skip
++
++    pos = list(built["positives"]) + [(a, m, lab) for m in members]
++    return {**built, "says": says, "shape": shape, "positives": pos,
++            "variant": "list_target",
+             "focus": sorted(set(built["focus"]) | set(members))}
+ 
+ 
+@@ -365,7 +390,7 @@ def _compose(a, b):
+         pos.append((x, y, lab))
+     return {"kind": a["kind"],
+             "variants": [v for v in (a.get("variant"), b.get("variant")) if v],
+-            "shape": a.get("shape") or b.get("shape"),
++            "shape": a.get("shape"),
+             "says_groups": [(a["focus"], a["says"]), (b["focus"], b["says"])],
+             "says": [], "avoid": [], "guard": [],
+             "groups": groups,
+@@ -440,6 +465,7 @@ def fingerprint():
+     parts += [f"{k}={v}" for k, v in sorted(N_ENTITIES.items())]
+     parts += [str(P_SECOND_ASSERTION), str(P_UNLISTED_TARGET), str(P_LIST_TARGET),
+               str(P_ROLE), str(LIST_MEMBERS), str(P_SECOND_IS_NEGATIVE)]
++    parts += ["each of"]
+     parts += sorted(x for a in ASSERTIONS.values()
+                     for x in (a["f"](
+                         [{"key": k, "surface": k, "type": "DRUG"} for k in "ABCD"],
+@@ -484,9 +510,10 @@ def make_specs(n, vocab, seed=0):
+             variant = "list_target"
+             n_members = rng.choice(LIST_MEMBERS)
+ 
+-        need = (ASSERTIONS[a_name]["n"] + (ASSERTIONS[second]["n"] if second else 0)
+-                + (1 if variant == "list_target" else 0))
++        need = ASSERTIONS[a_name]["n"] + (ASSERTIONS[second]["n"] if second else 0)
+         k = max(need, _pick(N_ENTITIES, rng))
++        if variant == "list_target" and k <= need:
++            variant = None
+ 
+         surfaces, seen = [], set()
+         for _ in range(400):
+@@ -528,7 +555,7 @@ def make_specs(n, vocab, seed=0):
+             built = _to_unlisted(built, rng)
+         elif variant == "list_target":
+             built = _to_list_target(built, ents, rng, reserved=reserved,
+-                                    n_members=n_members)
++                                    n_members=n_members, name=a_name)
+ 
+         if sec:
+             if rng.random() < P_UNLISTED_TARGET:
+diff --git a/v18test.ipynb b/v18test.ipynb
+index a329e18..4212e43 100644
+--- a/v18test.ipynb
++++ b/v18test.ipynb
+@@ -157,7 +157,13 @@
+    "id": "3",
+    "metadata": {},
+    "outputs": [],
+-   "source": []
++   "source": [
++    "for s in specs[:200]:\n",
++    "    print(f\"\\n{'-' * 66}\\n{s['assertions']}  variants={s['variants']}  \"\n",
++    "          f\"modifiers={s['modifiers']}\")\n",
++    "    print(render(s))\n",
++    "    print(f\"  gold: {s['positives'] or 'all NONE'}\")"
++   ]
+   },
+   {
+    "cell_type": "code",
+@@ -184,7 +190,7 @@
+     "# recall is 0.920 and positive recall 0.948 on real corpus text, and synthetic sentences\n",
+     "# are simpler, so treat a disagreement rate near 0.08 as the floor.\n",
+     "# ===========================================================================\n",
+-    "GEN = \"v18-check\"\n",
++    "GEN = \"v18-check-2\"\n",
+     "specs = make_specs(300, vocab=vocab, seed=0)\n",
+     "print(f\"prompt sha {fingerprint()}\")\n",
+     "\n",
+@@ -199,7 +205,16 @@
+     "                       \"list_target variants, role codes\"},\n",
+     "    vocab_source=vocab.fingerprint(), seed=0)\n",
+     "print(stats[\"reject_reasons\"])\n",
+-    "inst, _ = load_dataset(did)\n",
++    "inst, _ = load_dataset(did)\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "5",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "# ---------------------------------------------------------------------------\n",
+     "# 2a. Verifier adherence, split by variant. This is the cell that decides whether v18\n",
+@@ -208,8 +223,8 @@
+     "from ddi.verify_binary import build_batches, make_binary_verifier, load_verdicts\n",
+     "\n",
+     "VGEN = f\"{GEN}-verify\"\n",
+-    "generate_raw(build_batches(inst), make_binary_verifier(client, model=MODEL),\n",
+-    "             gen_id=VGEN, max_workers=8)\n",
++    "generate_raw(build_batches(inst), make_binary_verifier(client, model=MODEL, reasoning_effort=\"low\"),\n",
++    "             gen_id=VGEN, max_workers=16)\n",
+     "vdf = load_verdicts(VGEN)\n",
+     "\n",
+     "variant_of = {f\"synth:{GEN}:{s['spec_index']}\": tuple(s[\"variants\"]) or (\"plain\",)\n",
+@@ -273,7 +288,182 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "5",
++   "id": "6",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "# ---------------------------------------------------------------------------\n",
++    "# Which list_target failure is it? Free, on data already on disk.\n",
++    "#\n",
++    "# Two explanations for missed 0.395 against plain's 0.208, and they need\n",
++    "# different fixes:\n",
++    "#\n",
++    "#   wording   \"the same holds for\" is read as subject-copy. The member is written\n",
++    "#             as a second agent doing the same thing, not as a second object the\n",
++    "#             first drug acts on. Gold marks agent-member; the sentence supports\n",
++    "#             member-object. Missed rate would then be flat in the number of\n",
++    "#             members, because the first member is already wrong.\n",
++    "#\n",
++    "#   capacity  the model writes the first member and drops the rest. Missed rate\n",
++    "#             would then rise with the number of members.\n",
++    "#\n",
++    "# Flat -> reword. Rising -> cap members. Both -> do both.\n",
++    "# ---------------------------------------------------------------------------\n",
++    "import json\n",
++    "import re\n",
++    "from collections import Counter, defaultdict\n",
++    "\n",
++    "from ddi.verify_binary import load_verdicts\n",
++    "from ddi.synth import RAW\n",
++    "\n",
++    "GEN, VGEN = \"v18-check\", \"v18-check-verify\"\n",
++    "\n",
++    "n_members, variant = {}, {}\n",
++    "for line in (RAW / f\"{GEN}.jsonl\").read_text().splitlines():\n",
++    "    if not line:\n",
++    "        continue\n",
++    "    r = json.loads(line)\n",
++    "    if r.get(\"error\") or not r.get(\"sample\"):\n",
++    "        continue\n",
++    "    spec = r[\"spec\"]\n",
++    "    sid = f\"synth:{GEN}:{spec['spec_index']}\"\n",
++    "    variant[sid] = tuple(spec[\"variants\"]) or (\"plain\",)\n",
++    "    row = next((v for k, v in\n",
++    "                [x for g in spec[\"groups\"] for x in g[1]]\n",
++    "                if k == \"the same holds for\"), None)\n",
++    "    n_members[sid] = len(re.findall(r\"\\{(\\w)\\}\", row)) if row else 0\n",
++    "\n",
++    "vdf = load_verdicts(VGEN)\n",
++    "buckets = defaultdict(Counter)\n",
++    "for r in vdf.itertuples():\n",
++    "    sid = re.sub(r\":s\\d+$\", \"\", r.sent_id)\n",
++    "    v = variant.get(sid)\n",
++    "    if v is None or \"list_target\" not in v:\n",
++    "        continue\n",
++    "    buckets[n_members[sid]][(\"pos\" if r.gold_pos else \"none\",\n",
++    "                             \"flag\" if r.flagged else \"noflag\")] += 1\n",
++    "\n",
++    "print(f\"{'members':>8} {'n_pos':>6} {'missed':>8} {'n_none':>7} {'flagged':>8}\")\n",
++    "for m in sorted(buckets):\n",
++    "    c = buckets[m]\n",
++    "    npz = c[(\"pos\", \"flag\")] + c[(\"pos\", \"noflag\")]\n",
++    "    nn = c[(\"none\", \"flag\")] + c[(\"none\", \"noflag\")]\n",
++    "    print(f\"{m:>8} {npz:>6} {c[('pos', 'noflag')] / max(npz, 1):>8.3f} \"\n",
++    "          f\"{nn:>7} {c[('none', 'flag')] / max(nn, 1):>8.3f}\")\n",
++    "print(\"\\nplain baseline: missed 0.208, flagged 0.009\")\n",
++    "\n",
++    "# ---------------------------------------------------------------------------\n",
++    "# Then read ten of them. The verifier at low effort has a plain-spec missed rate\n",
++    "# of 0.208 against a calibrated positive recall of 0.948, so it is unreliable in\n",
++    "# absolute terms and the reading is what settles it.\n",
++    "# ---------------------------------------------------------------------------\n",
++    "missed = [r.sent_id for r in vdf.itertuples()\n",
++    "          if r.gold_pos and not r.flagged\n",
++    "          and \"list_target\" in (variant.get(re.sub(r\":s\\d+$\", \"\", r.sent_id)) or ())]\n",
++    "text = {}\n",
++    "for line in (RAW / f\"{GEN}.jsonl\").read_text().splitlines():\n",
++    "    if not line:\n",
++    "        continue\n",
++    "    r = json.loads(line)\n",
++    "    if r.get(\"sample\"):\n",
++    "        text[f\"synth:{GEN}:{r['spec']['spec_index']}\"] = r[\"sample\"][\"sentence\"]\n",
++    "import random \n",
++    "# sample random 10 of the missed sentences and print them for inspection, with their specs\n",
++    "for sid in random.sample(missed, min(10, len(missed))):\n",
++    "    spec = next((s for s in specs if f\"synth:{GEN}:{s['spec_index']}\" == sid), None)\n",
++    "    print(f\"\\nSpec: {spec}\")\n",
++    "    print(\"\\n\" + text.get(re.sub(r\":s\\d+$\", \"\", sid), \"?\"))"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "7",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import sys\n",
++    "import requests\n",
++    "\n",
++    "def run_masked_cluster_diagnostic():\n",
++    "    print(\"=== CLUSTER ENVIRONMENT TEST (WITH HEADERS) ===\")\n",
++    "    print(f\"Python Version: {sys.version.split()[0]}\")\n",
++    "    \n",
++    "    # Define a clean, non-generic User-Agent string\n",
++    "    headers = {\n",
++    "        \"User-Agent\": \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) GlasgowMScProject/1.0 (mailto:your_email@student.gla.ac.uk)\"\n",
++    "    }\n",
++    "    \n",
++    "    # 1. Test External Network Access\n",
++    "    print(\"\\n[1/2] Testing external internet connectivity with custom headers...\")\n",
++    "    test_url = \"https://nih.gov\"\n",
++    "    \n",
++    "    try:\n",
++    "        res = requests.get(test_url, headers=headers, timeout=5)\n",
++    "        if res.status_code == 200:\n",
++    "            print(\" -> SUCCESS: External API requests are working perfectly.\")\n",
++    "            data = res.json()\n",
++    "            props = data[\"PropertyTable\"][\"Properties\"][0]\n",
++    "            print(f\"\\n[2/2] Pipeline Test Successful:\")\n",
++    "            print(f\"    - InChIKey: {props.get('InChIKey')}\")\n",
++    "            print(f\"    - SMILES:   {props.get('SMILES')}\")\n",
++    "        elif res.status_code == 403:\n",
++    "            print(\" -> ERROR 403: Still forbidden. The cluster IP range itself might be blacklisted by NCBI.\")\n",
++    "        else:\n",
++    "            print(f\" -> ERROR: Returned unexpected status code {res.status_code}.\")\n",
++    "    except Exception as e:\n",
++    "        print(f\" -> CRITICAL ERROR: Network request failed. Context: {e}\")\n",
++    "\n",
++    "if __name__ == \"__main__\":\n",
++    "    run_masked_cluster_diagnostic()\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "8",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import json\n",
++    "\n",
++    "# Generate a small sample of specs and run through the model with reasoning\n",
++    "\n",
++    "sample_specs = make_specs(5, vocab=vocab, seed=42)\n",
++    "\n",
++    "for spec in sample_specs:\n",
++    "    print(f\"\\n{'-' * 70}\")\n",
++    "    print(f\"Spec {spec['spec_index']}: assertions={spec['assertions']}, variants={spec['variants']}\")\n",
++    "    print(f\"Modifiers: {spec['modifiers']}\")\n",
++    "    print(f\"\\nPrompt:\\n{render(spec)}\")\n",
++    "    print(f\"\\nGold: {spec['positives'] or 'all NONE'}\")\n",
++    "    \n",
++    "    # Generate with the model, capturing thinking\n",
++    "    response = client.messages.create(\n",
++    "        model=MODEL,\n",
++    "        max_tokens=16000,\n",
++    "        thinking={\n",
++    "            \"type\": \"enabled\",\n",
++    "            \"budget_tokens\": 10000\n",
++    "        },\n",
++    "        messages=[{\n",
++    "            \"role\": \"user\",\n",
++    "            \"content\": render(spec)\n",
++    "        }]\n",
++    "    )\n",
++    "    \n",
++    "    # Print thinking and response\n",
++    "    for block in response.content:\n",
++    "        if block.type == \"thinking\":\n",
++    "            print(f\"\\n[Model Thinking]:\\n{block.thinking}\")\n",
++    "        elif block.type == \"text\":\n",
++    "            print(f\"\\n[Model Output]:\\n{block.text}\")"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "9",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -313,7 +503,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "6",
++   "id": "10",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -370,7 +560,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "7",
++   "id": "11",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -421,7 +611,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "8",
++   "id": "12",
+    "metadata": {},
+    "outputs": [],
+    "source": [

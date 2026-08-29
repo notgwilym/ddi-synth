@@ -185,7 +185,7 @@ def _sentence_rows(instances, mask=True):
     return out
 
 
-def frame_recoverability(instances, seed=0, mask=True):
+def frame_recoverability(instances, seed=0, mask=True, min_count=6):
     """A: can a bag of words name the frame from the sentence alone.
 
     Entity spans are masked by default so the answer cannot come from the vocabulary
@@ -198,8 +198,20 @@ def frame_recoverability(instances, seed=0, mask=True):
     from sklearn.model_selection import train_test_split
 
     rows = [r for r in _sentence_rows(instances, mask=mask) if r["frame"]]
-    if len({r["frame"] for r in rows}) < 2:
-        return {}
+
+    # A frame seen once cannot be stratified, and a frame seen a handful of times
+    # cannot be measured. At smoke-run sizes the rare assertions (incompatible and
+    # contradictory are weighted 0.005) fall below this; dropping them is right, but
+    # the accuracy that comes back is then over the frames that survived, not all of
+    # them, so it is reported alongside the count.
+    counts = Counter(r["frame"] for r in rows)
+    keep = {f for f, n in counts.items() if n >= min_count}
+    dropped = sorted(set(counts) - keep)
+    rows = [r for r in rows if r["frame"] in keep]
+    if len(keep) < 2 or len(rows) < 20:
+        return {"error": "too few sentences per frame to measure",
+                "n_frames_dropped": len(dropped), "dropped": dropped}
+
     tr, te = train_test_split(rows, test_size=0.3, random_state=seed,
                               stratify=[r["frame"] for r in rows])
 
@@ -218,6 +230,7 @@ def frame_recoverability(instances, seed=0, mask=True):
             "macro_f1": f1_score(yte, pred, average="macro", zero_division=0),
             "majority_baseline": accuracy_score(yte, [major] * len(yte)),
             "n_frames": len(set(ytr)), "n_train": len(tr), "n_test": len(te),
+            "n_frames_dropped": len(dropped), "dropped": dropped,
             "per_frame": _per_frame_recall(yte, pred)}
 
 
@@ -246,7 +259,7 @@ def _best_macro_f1(y, score):
     return best, best_t
 
 
-def shortcut_via_frame(instances, seed=0, mask=True):
+def shortcut_via_frame(instances, seed=0, mask=True, min_count=6):
     """C: score every pair by the positive rate of its frame, using no pair information
     at any point, and see how well that alone separates POS from NONE.
 
@@ -268,6 +281,10 @@ def shortcut_via_frame(instances, seed=0, mask=True):
     rows = [r for r in instances if r.get("frame")]
     if not rows:
         return {}
+    counts = Counter(r["frame"] for r in rows)
+    rows = [r for r in rows if counts[r["frame"]] >= min_count]
+    if len({r["frame"] for r in rows}) < 2:
+        return {"error": "too few sentences per frame to measure"}
     sents = sorted({r["sent_id"] for r in rows})
     tr_s, te_s = train_test_split(sents, test_size=0.3, random_state=seed)
     tr_s, te_s = set(tr_s), set(te_s)
