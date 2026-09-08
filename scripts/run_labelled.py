@@ -86,7 +86,10 @@ def label(args):
     train, dev, val = build_human(seed=args.split_seed)
     specs = label_real.sample_sentences(train, n=args.n, seed=args.seed)
     n_pairs = sum(len(s["pairs"]) for s in specs)
-    print(f"{len(specs)} sentences, {n_pairs} pairs, "
+    n_sent = len(specs)
+    if args.chunk:
+        specs = label_real.chunk(specs, size=args.chunk)
+    print(f"{n_sent} sentences, {n_pairs} pairs, {len(specs)} calls, "
           f"effort={args.effort}  max_output_tokens={args.max_tokens}")
 
     fn = label_real.make_labeller(
@@ -120,6 +123,8 @@ def main():
     p.add_argument("--max-tokens", type=int, default=8000)
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--api", default="responses")
+    p.add_argument("--chunk", type=int, default=8,
+                   help="pairs per call; 0 disables chunking")
     args = p.parse_args()
     {"generate": generate, "build": build, "label": label, "agree": agree,
      "errors": errors}[args.cmd](args)

@@ -24,7 +24,7 @@ true positives on plain synthetic specs against a calibrated 0.948 recall.
 """
 import json
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 
 from .verify_binary import build_batches, render
 
@@ -82,6 +82,30 @@ def sample_sentences(instances, n=None, seed=0, min_entities=2, max_pairs=190):
     return batches
 
 
+def chunk(specs, size=8):
+    """Split a sentence's pairs across several calls, keeping the whole numbered sentence
+    in every one so the model still sees full context.
+
+    At high effort a single call asking about 91 pairs times out or comes back with the
+    wrong number of labels: error rate ran 0.60 above 25 pairs, 0.12 at 10-24 and zero
+    below four. That cost 26% of all pairs, and because dense sentences are almost all
+    NONE the loss was biased -- the kept set ran 0.188 positive against the corpus's
+    0.161, so the arm was losing precisely its hardest negatives.
+
+    Note this changes the spec list, and generate_raw resumes on positional index, so a
+    chunked run needs a fresh gen-id rather than resuming an unchunked one.
+    """
+    out = []
+    for b in specs:
+        n = len(b["pairs"])
+        for c, start in enumerate(range(0, n, size)):
+            sl = slice(start, start + size)
+            out.append({**b, "pairs": b["pairs"][sl], "names": b["names"][sl],
+                        "gold": b["gold"][sl], "chunk": c,
+                        "n_chunks": (n + size - 1) // size})
+    return out
+
+
 def make_labeller(client, model="gpt-oss-120b", temperature=0.0,
                   reasoning_effort="high", max_output_tokens=8000, api="responses"):
     """max_output_tokens is deliberately large. Reasoning tokens count against the
@@ -129,6 +153,7 @@ def make_labeller(client, model="gpt-oss-120b", temperature=0.0,
         clean = [g if g in LABELS else "NONE" for g in got]
         return {"sent_id": spec["sent_id"], "labels": clean, "gold": spec["gold"],
                 "n_pairs": len(spec["pairs"]),
+                "chunk": spec.get("chunk", 0), "n_chunks": spec.get("n_chunks", 1),
                 "off_schema": sum(1 for g in got if g not in LABELS)}
 
     return label
@@ -149,29 +174,123 @@ def _rows(verdict_path):
                          "error": str(r.get("error"))})
         else:
             ok.append(payload)
+
+    # Reassemble chunked sentences. A sentence missing any chunk is dropped whole,
+    # because a partial sentence would misalign pair order against the instance list.
+    parts = defaultdict(list)
+    for o in ok:
+        parts[o["sent_id"]].append(o)
+    merged, partial = [], 0
+    for sent_id, ps in parts.items():
+        want = ps[0].get("n_chunks", 1)
+        if len(ps) != want:
+            partial += 1
+            errs.append({"sent_id": sent_id, "n_pairs": sum(p["n_pairs"] for p in ps),
+                         "error": f"incomplete: {len(ps)}/{want} chunks"})
+            continue
+        ps.sort(key=lambda p: p.get("chunk", 0))
+        merged.append({"sent_id": sent_id,
+                       "labels": [x for p in ps for x in p["labels"]],
+                       "gold": [x for p in ps for x in p["gold"]],
+                       "n_pairs": sum(p["n_pairs"] for p in ps),
+                       "off_schema": sum(p["off_schema"] for p in ps)})
+    if partial:
+        print(f"{partial} sentences dropped for missing chunks")
+    return merged, errs
+
+
+def _raw_rows(verdict_path):
+    """Generic reader for any generate_raw output: {spec_index, spec, sample, error}.
+    Makes no assumption about what sample_fn returned, unlike _rows below which is
+    specific to the labelling arm's {labels, gold, sent_id} payload. Use this one for
+    the generation arm; use error_report(..., kind="label") for the labelling arm."""
+    ok, errs = [], []
+    for line in open(verdict_path).read().splitlines():
+        if not line:
+            continue
+        r = json.loads(line)
+        if r.get("error") or not r.get("sample"):
+            errs.append({"spec": r.get("spec") or {}, "error": str(r.get("error"))})
+        else:
+            ok.append({"spec": r.get("spec") or {}, "sample": r["sample"]})
     return ok, errs
 
 
-def error_report(verdict_path):
-    """Where the failures are. At high effort they concentrate in sentences with many
-    pairs, because reasoning tokens scale with the number of questions asked and both the
-    token cap and the client timeout bite there first."""
-    ok, errs = _rows(verdict_path)
+def error_report(verdict_path, kind="auto"):
+    """Where the failures are. At high effort they concentrate in specs with many
+    pairs or assertions, because reasoning tokens scale with the number of things
+    being asked about and both the token cap and the client timeout bite there first.
+
+    kind="label" reads the labelling arm's {sent_id, labels, gold} payload and buckets
+    by pairs per call, which is what caught the label-high run's chunking need.
+    kind="generate" reads any generate_raw output generically and buckets by whatever
+    size signal is in the spec: n_pairs if present, else n_assertions, else entity
+    count, else just reports the flat error rate.
+    kind="auto" (default) tries "label" first and falls back to "generate" if the
+    payload doesn't have the expected keys, so this one function works on either
+    arm's raw file without the caller needing to know which arm produced it.
+    """
+    if kind == "auto":
+        # Peek at one successful record's payload shape before choosing a parser.
+        # _rows assumes {sent_id, labels, gold} and does chunk reassembly keyed on
+        # sent_id; running it on a generation file (payload = {"sentence": ...}, no
+        # sent_id) throws partway through, so check the shape first rather than
+        # catching the crash after parsing however many lines came before it.
+        kind = "generate"
+        for line in open(verdict_path).read().splitlines():
+            if not line:
+                continue
+            r = json.loads(line)
+            payload = r.get("sample") if "sample" in r else r
+            if not r.get("error") and payload:
+                kind = "label" if "sent_id" in payload and "labels" in payload \
+                    else "generate"
+                break
+        ok, errs = (_rows(verdict_path) if kind == "label"
+                   else _raw_rows(verdict_path))
+    elif kind == "label":
+        ok, errs = _rows(verdict_path)
+    else:
+        ok, errs = _raw_rows(verdict_path)
+
     print(f"{len(ok)} ok, {len(errs)} errored, "
           f"{len(errs) / max(len(ok) + len(errs), 1):.3f} error rate")
     if not errs:
         return
     print("\nerror kinds")
-    for kind, n in Counter(e["error"][:70] for e in errs).most_common(6):
-        print(f"  {n:5d}  {kind}")
+    for c, n in Counter(e["error"][:70] for e in errs).most_common(6):
+        print(f"  {n:5d}  {c}")
 
     def bucket(n):
         return "1" if n <= 1 else "2-3" if n <= 3 else "4-9" if n <= 9 else \
                "10-24" if n <= 24 else "25+"
 
-    tot = Counter(bucket(len(o["labels"])) for o in ok)
-    bad = Counter(bucket(e["n_pairs"]) for e in errs)
-    print(f"\n{'pairs':>7} {'ok':>6} {'err':>6} {'err rate':>9}")
+    if kind == "label":
+        tot = Counter(bucket(len(o["labels"])) for o in ok)
+        bad = Counter(bucket(e["n_pairs"]) for e in errs)
+        label_col = "pairs"
+    else:
+        def size(spec):
+            if "n_pairs" in spec:
+                return spec["n_pairs"]
+            if "assertions" in spec:
+                return len(spec["assertions"])
+            if "entities" in spec:
+                return len(spec["entities"])
+            return -1
+
+        sizes_ok = [size(o["spec"]) for o in ok]
+        sizes_err = [size(e["spec"]) for e in errs]
+        if all(s == -1 for s in sizes_ok + sizes_err):
+            print("\nno size signal found in spec (no n_pairs/assertions/entities); "
+                  "can't bucket, only the flat rate above is available")
+            return
+        label_col = ("assertions" if "assertions" in ok[0]["spec"] else
+                    "entities" if ok else "size")
+        tot = Counter(bucket(s) for s in sizes_ok)
+        bad = Counter(bucket(s) for s in sizes_err)
+
+    print(f"\n{label_col:>7} {'ok':>6} {'err':>6} {'err rate':>9}")
     for b in ["1", "2-3", "4-9", "10-24", "25+"]:
         t, e = tot[b], bad[b]
         print(f"{b:>7} {t:>6} {e:>6} {e / max(t + e, 1):>9.3f}")
@@ -221,6 +340,14 @@ def agreement(verdict_path):
     print(classification_report(y, yhat, digits=3, zero_division=0))
     pos = [(a, b) for a, b in zip(y, yhat) if a != "NONE" or b != "NONE"]
     ok = sum(1 for a, b in pos if a == b)
+    pos = [c for c in LABELS if c != "NONE"]
+    tp = sum(1 for a, b in zip(y, yhat) if a == b and a != "NONE")
+    n_gold = sum(1 for a in y if a != "NONE")
+    n_pred = sum(1 for b in yhat if b != "NONE")
+    mp, mr = tp / max(n_pred, 1), tp / max(n_gold, 1)
+    print(f"micro over positive classes:  P {mp:.3f}  R {mr:.3f}  "
+          f"F1 {2 * mp * mr / max(mp + mr, 1e-9):.3f}")
+    print("reference: human-trained 0.790, v18 generator 0.486\n")
     print(f"pairs {len(y)}, gold positives {sum(1 for a in y if a != 'NONE')}, "
           f"llm positives {sum(1 for b in yhat if b != 'NONE')}")
     print(f"agreement over pairs either side calls positive: {ok / max(len(pos), 1):.3f}")

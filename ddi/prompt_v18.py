@@ -413,7 +413,7 @@ N_ENTITIES = {2: 0.52, 3: 0.24, 4: 0.10, 5: 0.06, 6: 0.04, 7: 0.02, 8: 0.01, 10:
 
 
 def make_sample_fn(client, model="gpt-oss-120b", temperature=0.9,
-                   reasoning_effort="low", max_output_tokens=1500, api="responses"):
+                   reasoning_effort="low", max_output_tokens=10000, api="responses"):
     """v17's sampler with v18's render. prompt.make_sample_fn closes over prompt.render,
     so it cannot be reused directly. SYSTEM is unchanged: it states the task and the
     guideline conventions, neither of which this revision touches."""
