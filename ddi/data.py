@@ -25,8 +25,22 @@ def load_brat_docs(split="Train"):
 from bioc.brat.datastructure import BratDocument
 
 
-def make_sentence_level(doc, nlp=spacy.load("en_core_web_sm")):
-    parsed = nlp(doc.text)
+_NLP = None
+
+
+def _nlp():
+    """Loaded on first use rather than at import. A default argument of
+    spacy.load(...) is evaluated when the module is imported, so importing anything
+    that touches ddi.data used to require en_core_web_sm even to compute a probe that
+    never splits a sentence."""
+    global _NLP
+    if _NLP is None:
+        _NLP = spacy.load("en_core_web_sm")
+    return _NLP
+
+
+def make_sentence_level(doc, nlp=None):
+    parsed = (nlp or _nlp())(doc.text)
     sent_docs = []
     for i, sent in enumerate(parsed.sents):
         sent_entities = [

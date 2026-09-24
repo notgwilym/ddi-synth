@@ -1,0 +1,57 @@
+{
+ "v13": {
+  "dataset_id": "20260727-121735-098a21",
+  "gen_id": "v13",
+  "sentences_available": 3149,
+  "instances_available": 3206,
+  "sentences_sampled": 400,
+  "raw_file_found": false,
+  "specs_joined": 0,
+  "prompt_sha": "903006b69dec",
+  "prompt_reproducible_from_repo": false
+ },
+ "v14": {
+  "dataset_id": "20260807-123340-ff79db",
+  "gen_id": "v14-full-2",
+  "sentences_available": 5540,
+  "instances_available": 18482,
+  "sentences_sampled": 400,
+  "raw_file_found": true,
+  "specs_joined": 400,
+  "prompt_sha": "0436822c1cb6",
+  "prompt_reproducible_from_repo": false
+ },
+ "v15": {
+  "dataset_id": "20260816-005908-3d6539",
+  "gen_id": "v15-full",
+  "sentences_available": 5798,
+  "instances_available": 36000,
+  "sentences_sampled": 400,
+  "raw_file_found": true,
+  "specs_joined": 400,
+  "prompt_sha": "f32a41150a79",
+  "prompt_reproducible_from_repo": false
+ },
+ "v17": {
+  "dataset_id": "20260818-100023-0da98b",
+  "gen_id": "v17-full",
+  "sentences_available": 5702,
+  "instances_available": 23880,
+  "sentences_sampled": 400,
+  "raw_file_found": true,
+  "specs_joined": 400,
+  "prompt_sha": "339fe4c16c0b",
+  "prompt_reproducible_from_repo": false
+ },
+ "v18": {
+  "dataset_id": "20260825-095703-67c1fa",
+  "gen_id": "v18-full",
+  "sentences_available": 5887,
+  "instances_available": 33549,
+  "sentences_sampled": 400,
+  "raw_file_found": true,
+  "specs_joined": 400,
+  "prompt_sha": "ce56b4572b25",
+  "prompt_reproducible_from_repo": false
+ }
+}
