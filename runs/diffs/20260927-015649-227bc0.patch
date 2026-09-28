@@ -1,0 +1,349 @@
+diff --git a/final_cells.ipynb b/final_cells.ipynb
+index e6f7044..3faedcd 100644
+--- a/final_cells.ipynb
++++ b/final_cells.ipynb
+@@ -23,7 +23,16 @@
+     "# The headline result does not depend on any of this: 0.785 / 0.657 / 0.462 at n=3,\n",
+     "# text provenance costing 0.195 against label provenance's 0.128.\n",
+     "# ===========================================================================\n",
+-    "!pip install -q transformers torch scikit-learn openai tqdm pandas bioc spacy\n",
++    "!pip install -q transformers torch scikit-learn openai tqdm pandas bioc spacy\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "1",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "import os\n",
+     "import json\n",
+@@ -64,7 +73,16 @@
+     "label_inst, dropped = label_real.to_instances(train, LABEL_VERDICTS)\n",
+     "POOL_L = label_inst\n",
+     "POOL_H = [{**r, \"label\": r[\"gold_label\"]} for r in label_inst]\n",
+-    "POOL_S = load_dataset(V18_ID)[0]\n",
++    "POOL_S = load_dataset(V18_ID)[0]\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "2",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "print(f\"labelling arm: {len(POOL_L)} instances, \"\n",
+     "      f\"{len(group_by_sentence(POOL_L))} sentences, {dropped} dropped\")\n",
+@@ -78,7 +96,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "1",
++   "id": "3",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -149,7 +167,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "2",
++   "id": "4",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -214,7 +232,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "3",
++   "id": "5",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -223,7 +241,16 @@
+     "print(f\"2b: {len(specs_v2)} chunked specs\")\n",
+     "generate_raw(specs_v2, label_real.make_labeller(client, model=MODEL),\n",
+     "             gen_id=\"label-v2-c8\", max_workers=32)\n",
+-    "label_real.SYSTEM = _orig_system\n",
++    "label_real.SYSTEM = _orig_system\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "6",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "# 2c. Positives only. Everything the annotator called NONE is left alone, because the\n",
+     "# instrument's own false-positive rate on true NONEs is 8.0% and running it over 10,000\n",
+@@ -238,7 +265,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "4",
++   "id": "7",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -286,7 +313,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "5",
++   "id": "8",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -344,7 +371,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "6",
++   "id": "9",
+    "metadata": {},
+    "outputs": [],
+    "source": []
+@@ -352,7 +379,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "7",
++   "id": "10",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -386,7 +413,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "8",
++   "id": "11",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -416,7 +443,10 @@
+     "            continue                                  # empty training set\n",
+     "        for seed in seeds:\n",
+     "            sub = subsample_by_sentence(POOL_H, budget, seed) if budget else []\n",
+-    "            data = sub + list(add)\n",
++    "            used = {r[\"sent_id\"] for r in sub}\n",
++    "            rest = [r for r in POOL_L if r[\"sent_id\"] not in used]   # LLM labels only where no human label exists\n",
++    "            add = {\"none\": [], \"synth\": POOL_S, \"llm\": rest, \"both\": POOL_S + rest}[add_name]\n",
++    "            data = sub + add\n",
+     "            grid.append((f\"grid-b{budget}-{add_name}\", data, seed,\n",
+     "                         {\"budget_sentences\": budget, \"addition\": add_name,\n",
+     "                          \"match_balance\": False}))\n",
+@@ -452,7 +482,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "9",
++   "id": "12",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -493,7 +523,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "10",
++   "id": "13",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -520,13 +550,140 @@
+     "test, that goes in the writeup as a sentence, not as a change of arm.\n",
+     "\"\"\")"
+    ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "14",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "# ===========================================================================\n",
++    "# Cell 5b: v18 pruning, two more seeds and the question of what was removed.\n",
++    "#\n",
++    "# At three seeds pruned beats random-prune by 0.026 at 1.8 standard errors, with the\n",
++    "# same recall-only signature as v14 and v15. An effect of that size is exactly what the\n",
++    "# v18 notebook said needs five seeds to carry, so seeds 3 and 4 go on the two arms that\n",
++    "# the comparison rests on. The unpruned judged arm is not rerun; its sd is 0.006.\n",
++    "#\n",
++    "# The second question is whether the gain comes from undoing v18's own design. The\n",
++    "# `unlisted` variant deliberately writes sentences whose surface reads positive and\n",
++    "# whose gold is NONE, and the verifier flags exactly that shape. If pruning removes\n",
++    "# unlisted sentences at a much higher rate than plain ones, some of the recall gain is\n",
++    "# the verifier deleting the hard negatives v18 was built to add.\n",
++    "#\n",
++    "# Run in the same kernel as cells 0 and 3. If the kernel has restarted, run those first;\n",
++    "# the guard below rebuilds the arms, and build_arms with seed=0 is deterministic, so the\n",
++    "# random-prune arm is the same one the first three seeds trained on.\n",
++    "# ===========================================================================\n",
++    "import re\n",
++    "import json\n",
++    "import statistics as st\n",
++    "from collections import Counter, defaultdict\n",
++    "\n",
++    "if \"arms_s\" not in globals():\n",
++    "    vdf_s = load_verdicts(\"v18-low-verify\")\n",
++    "    arms_s = build_arms(POOL_S, vdf_s, seed=0)\n",
++    "    print(\"rebuilt arms:\", {k: len(v) for k, v in arms_s.items()})\n",
++    "\n",
++    "for name in [\"judged-pruned\", \"judged-randprune\"]:\n",
++    "    train_arm(f\"v18-{name}\", arms_s[name], seeds=(3, 4), notes=\"v18 pruning arms, val\")\n",
++    "\n",
++    "# ---------------------------------------------------------------------------\n",
++    "# Summary across every seed on disk, with the standard error of each difference.\n",
++    "# ---------------------------------------------------------------------------\n",
++    "rows = [json.loads(l) for l in RESULTS.read_text().splitlines() if l]\n",
++    "by = defaultdict(list)\n",
++    "for r in rows:\n",
++    "    if r[\"arm\"] in (\"v18-judged\", \"v18-judged-pruned\", \"v18-judged-randprune\"):\n",
++    "        by[r[\"arm\"]].append(r)\n",
++    "\n",
++    "summ = {}\n",
++    "print(f\"\\n{'arm':<22} {'n':>2} {'F1':>6} {'sd':>6} {'P':>6} {'R':>6}\")\n",
++    "for arm in (\"v18-judged\", \"v18-judged-pruned\", \"v18-judged-randprune\"):\n",
++    "    rs = by[arm]\n",
++    "    f = [r[\"f1\"] for r in rs]\n",
++    "    summ[arm] = (st.mean(f), st.stdev(f) if len(f) > 1 else 0.0, len(f))\n",
++    "    print(f\"{arm:<22} {len(f):>2} {st.mean(f):>6.3f} {summ[arm][1]:>6.3f} \"\n",
++    "          f\"{st.mean(r['p'] for r in rs):>6.3f} {st.mean(r['r'] for r in rs):>6.3f}\")\n",
++    "\n",
++    "def diff(a, b):\n",
++    "    (ma, sa, na), (mb, sb, nb) = summ[a], summ[b]\n",
++    "    se = (sa ** 2 / na + sb ** 2 / nb) ** 0.5\n",
++    "    return ma - mb, se, (ma - mb) / se if se else float(\"inf\")\n",
++    "\n",
++    "for a, b in [(\"v18-judged-pruned\", \"v18-judged-randprune\"),\n",
++    "             (\"v18-judged-pruned\", \"v18-judged\")]:\n",
++    "    d, se, z = diff(a, b)\n",
++    "    print(f\"\\n{a} minus {b}: {d:+.3f}  (se {se:.3f}, {z:.1f} se)\")\n",
++    "\n",
++    "print(\"\"\"\n",
++    "reference: v14 pruned beat random-prune by +0.041, v15 by +0.042, both recall-only.\n",
++    "  above ~2 se with recall carrying it   -> replicates on a third generator\n",
++    "  below ~2 se                           -> direction replicates, magnitude does not\n",
++    "                                           resolve at five seeds; report it that way\n",
++    "These are val numbers. Do not compare them with the 0.486 v18 dev figure.\n",
++    "\"\"\")\n",
++    "\n",
++    "# ---------------------------------------------------------------------------\n",
++    "# What pruning removed, by v18 variant.\n",
++    "#\n",
++    "# The removed set is the judged arm minus the pruned arm. Each removed instance is\n",
++    "# traced to the spec that produced it through the sent_id join, and its variant is read\n",
++    "# from the raw generation record.\n",
++    "# ---------------------------------------------------------------------------\n",
++    "SUF = re.compile(r\":s\\d+$\")\n",
++    "gen = POOL_S[0][\"sent_id\"].split(\":\")[1]\n",
++    "variant = {}\n",
++    "for line in (RAW / f\"{gen}.jsonl\").read_text().splitlines():\n",
++    "    if not line:\n",
++    "        continue\n",
++    "    r = json.loads(line)\n",
++    "    if r.get(\"sample\") and not r.get(\"error\"):\n",
++    "        v = r[\"spec\"].get(\"variants\") or ()\n",
++    "        variant[f\"synth:{gen}:{r['spec_index']}\"] = \"+\".join(v) if v else \"plain\"\n",
++    "\n",
++    "key = lambda r: (r[\"sent_id\"], r[\"text\"])\n",
++    "kept = {key(r) for r in arms_s[\"judged-pruned\"]}\n",
++    "judged = arms_s[\"judged\"]\n",
++    "removed = [r for r in judged if key(r) not in kept]\n",
++    "var_of = lambda r: variant.get(SUF.sub(\"\", r[\"sent_id\"]), \"?\")\n",
++    "\n",
++    "all_v, rem_v = Counter(map(var_of, judged)), Counter(map(var_of, removed))\n",
++    "print(f\"{len(removed)} instances removed of {len(judged)} \"\n",
++    "      f\"({len(removed) / len(judged):.1%}), from generation {gen}\\n\")\n",
++    "print(f\"{'variant':<24} {'judged':>8} {'removed':>8} {'removal rate':>13}\")\n",
++    "for v, n in all_v.most_common():\n",
++    "    print(f\"{v:<24} {n:>8} {rem_v[v]:>8} {rem_v[v] / n:>13.3%}\")\n",
++    "\n",
++    "print(\"\\nremoved instances by gold label:\", dict(Counter(r[\"label\"] for r in removed)))\n",
++    "print(\"\"\"\n",
++    "  unlisted removed at a rate well above plain -> the verifier is deleting v18's\n",
++    "     deliberate hard negatives, and part of the gain undoes v18's design. Say so.\n",
++    "  rates roughly equal across variants          -> pruning is not targeting the\n",
++    "     variants, and the gain is not coming from undoing them.\n",
++    "\"\"\")"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "15",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import random\n",
++    "unl = [r for r in removed if \"unlisted\" in var_of(r)]\n",
++    "for r in random.Random(0).sample(unl, 20):\n",
++    "    print(r[\"text\"], \"\\n\")"
++   ]
+   }
+  ],
+  "metadata": {
+   "kernelspec": {
+-   "display_name": "Python [conda env:base] *",
++   "display_name": "defaultInterpreterPath: 3.10.13.final.0",
+    "language": "python",
+-   "name": "conda-base-py"
++   "name": "python3"
+   },
+   "language_info": {
+    "codemirror_mode": {
+diff --git a/reports/final_arms.jsonl b/reports/final_arms.jsonl
+index 06d2500..79d235c 100644
+--- a/reports/final_arms.jsonl
++++ b/reports/final_arms.jsonl
+@@ -5,3 +5,9 @@
+ {"arm": "v18-judged-pruned", "seed": 1, "n": 30293, "pos_rate": 0.1546, "f1": 0.4605385329619313, "p": 0.35152374202693126, "r": 0.6675639300134589}
+ {"arm": "v18-judged-pruned", "seed": 2, "n": 30293, "pos_rate": 0.1546, "f1": 0.4923954372623574, "p": 0.38060249816311537, "r": 0.6971736204576043}
+ {"arm": "v18-judged-randprune", "seed": 0, "n": 30293, "pos_rate": 0.1546, "f1": 0.44577205882352944, "p": 0.33845080251221216, "r": 0.6527590847913862}
++{"arm": "v18-judged-randprune", "seed": 1, "n": 30293, "pos_rate": 0.1546, "f1": 0.4274730907227063, "p": 0.34519867549668876, "r": 0.5612382234185733}
++{"arm": "v18-judged-randprune", "seed": 2, "n": 30293, "pos_rate": 0.1546, "f1": 0.45714285714285713, "p": 0.37225042301184436, "r": 0.5921938088829072}
++{"arm": "v18-judged-pruned", "seed": 3, "n": 30293, "pos_rate": 0.1546, "f1": 0.44313011828935395, "p": 0.3347079037800687, "r": 0.6554508748317631}
++{"arm": "v18-judged-pruned", "seed": 4, "n": 30293, "pos_rate": 0.1546, "f1": 0.45731977001326846, "p": 0.34057971014492755, "r": 0.6958277254374159}
++{"arm": "v18-judged-randprune", "seed": 3, "n": 30293, "pos_rate": 0.1546, "f1": 0.4628330995792426, "p": 0.3545845272206304, "r": 0.6662180349932705}
++{"arm": "v18-judged-randprune", "seed": 4, "n": 30293, "pos_rate": 0.1546, "f1": 0.45950864422202004, "p": 0.3470790378006873, "r": 0.6796769851951547}
+diff --git a/tutorial/executed.ipynb b/tutorial/executed.ipynb
+index 5305130..f233d16 100644
+--- a/tutorial/executed.ipynb
++++ b/tutorial/executed.ipynb
+@@ -151,8 +151,7 @@
+     "            buckets[min(r[\"n_entities\"], 6)].append(p[\"label\"] != \"NONE\")\n",
+     "    return {k: round(sum(v) / len(v), 3) for k, v in sorted(buckets.items())}\n",
+     "\n",
+-    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \\\n",
+-    "  .rename_axis(\"drugs (6 = six or more)\").fillna(\"none written\")"
++    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}).rename_axis(\"drugs (6 = six or more)\")"
+    ]
+   },
+   {
+@@ -183,7 +182,7 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "my_guesses = [\"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\"]   # edit: add 10 guesses (\"POS\" or \"NONE\")\n",
++    "my_guesses = [\"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\"]   # edit\n",
+     "game.score(my_guesses)"
+    ]
+   },
+@@ -628,7 +627,7 @@
+    "notebook_metadata_filter": "-all"
+   },
+   "kernelspec": {
+-   "display_name": "Python 3",
++   "display_name": "base",
+    "language": "python",
+    "name": "python3"
+   },

@@ -1,0 +1,1094 @@
+diff --git a/final_cells.ipynb b/final_cells.ipynb
+index e6f7044..3faedcd 100644
+--- a/final_cells.ipynb
++++ b/final_cells.ipynb
+@@ -23,7 +23,16 @@
+     "# The headline result does not depend on any of this: 0.785 / 0.657 / 0.462 at n=3,\n",
+     "# text provenance costing 0.195 against label provenance's 0.128.\n",
+     "# ===========================================================================\n",
+-    "!pip install -q transformers torch scikit-learn openai tqdm pandas bioc spacy\n",
++    "!pip install -q transformers torch scikit-learn openai tqdm pandas bioc spacy\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "1",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "import os\n",
+     "import json\n",
+@@ -64,7 +73,16 @@
+     "label_inst, dropped = label_real.to_instances(train, LABEL_VERDICTS)\n",
+     "POOL_L = label_inst\n",
+     "POOL_H = [{**r, \"label\": r[\"gold_label\"]} for r in label_inst]\n",
+-    "POOL_S = load_dataset(V18_ID)[0]\n",
++    "POOL_S = load_dataset(V18_ID)[0]\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "2",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "print(f\"labelling arm: {len(POOL_L)} instances, \"\n",
+     "      f\"{len(group_by_sentence(POOL_L))} sentences, {dropped} dropped\")\n",
+@@ -78,7 +96,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "1",
++   "id": "3",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -149,7 +167,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "2",
++   "id": "4",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -214,7 +232,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "3",
++   "id": "5",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -223,7 +241,16 @@
+     "print(f\"2b: {len(specs_v2)} chunked specs\")\n",
+     "generate_raw(specs_v2, label_real.make_labeller(client, model=MODEL),\n",
+     "             gen_id=\"label-v2-c8\", max_workers=32)\n",
+-    "label_real.SYSTEM = _orig_system\n",
++    "label_real.SYSTEM = _orig_system\n"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "6",
++   "metadata": {},
++   "outputs": [],
++   "source": [
+     "\n",
+     "# 2c. Positives only. Everything the annotator called NONE is left alone, because the\n",
+     "# instrument's own false-positive rate on true NONEs is 8.0% and running it over 10,000\n",
+@@ -238,7 +265,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "4",
++   "id": "7",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -286,7 +313,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "5",
++   "id": "8",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -344,7 +371,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "6",
++   "id": "9",
+    "metadata": {},
+    "outputs": [],
+    "source": []
+@@ -352,7 +379,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "7",
++   "id": "10",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -386,7 +413,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "8",
++   "id": "11",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -416,7 +443,10 @@
+     "            continue                                  # empty training set\n",
+     "        for seed in seeds:\n",
+     "            sub = subsample_by_sentence(POOL_H, budget, seed) if budget else []\n",
+-    "            data = sub + list(add)\n",
++    "            used = {r[\"sent_id\"] for r in sub}\n",
++    "            rest = [r for r in POOL_L if r[\"sent_id\"] not in used]   # LLM labels only where no human label exists\n",
++    "            add = {\"none\": [], \"synth\": POOL_S, \"llm\": rest, \"both\": POOL_S + rest}[add_name]\n",
++    "            data = sub + add\n",
+     "            grid.append((f\"grid-b{budget}-{add_name}\", data, seed,\n",
+     "                         {\"budget_sentences\": budget, \"addition\": add_name,\n",
+     "                          \"match_balance\": False}))\n",
+@@ -452,7 +482,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "9",
++   "id": "12",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -493,7 +523,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "10",
++   "id": "13",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -520,13 +550,140 @@
+     "test, that goes in the writeup as a sentence, not as a change of arm.\n",
+     "\"\"\")"
+    ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "14",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "# ===========================================================================\n",
++    "# Cell 5b: v18 pruning, two more seeds and the question of what was removed.\n",
++    "#\n",
++    "# At three seeds pruned beats random-prune by 0.026 at 1.8 standard errors, with the\n",
++    "# same recall-only signature as v14 and v15. An effect of that size is exactly what the\n",
++    "# v18 notebook said needs five seeds to carry, so seeds 3 and 4 go on the two arms that\n",
++    "# the comparison rests on. The unpruned judged arm is not rerun; its sd is 0.006.\n",
++    "#\n",
++    "# The second question is whether the gain comes from undoing v18's own design. The\n",
++    "# `unlisted` variant deliberately writes sentences whose surface reads positive and\n",
++    "# whose gold is NONE, and the verifier flags exactly that shape. If pruning removes\n",
++    "# unlisted sentences at a much higher rate than plain ones, some of the recall gain is\n",
++    "# the verifier deleting the hard negatives v18 was built to add.\n",
++    "#\n",
++    "# Run in the same kernel as cells 0 and 3. If the kernel has restarted, run those first;\n",
++    "# the guard below rebuilds the arms, and build_arms with seed=0 is deterministic, so the\n",
++    "# random-prune arm is the same one the first three seeds trained on.\n",
++    "# ===========================================================================\n",
++    "import re\n",
++    "import json\n",
++    "import statistics as st\n",
++    "from collections import Counter, defaultdict\n",
++    "\n",
++    "if \"arms_s\" not in globals():\n",
++    "    vdf_s = load_verdicts(\"v18-low-verify\")\n",
++    "    arms_s = build_arms(POOL_S, vdf_s, seed=0)\n",
++    "    print(\"rebuilt arms:\", {k: len(v) for k, v in arms_s.items()})\n",
++    "\n",
++    "for name in [\"judged-pruned\", \"judged-randprune\"]:\n",
++    "    train_arm(f\"v18-{name}\", arms_s[name], seeds=(3, 4), notes=\"v18 pruning arms, val\")\n",
++    "\n",
++    "# ---------------------------------------------------------------------------\n",
++    "# Summary across every seed on disk, with the standard error of each difference.\n",
++    "# ---------------------------------------------------------------------------\n",
++    "rows = [json.loads(l) for l in RESULTS.read_text().splitlines() if l]\n",
++    "by = defaultdict(list)\n",
++    "for r in rows:\n",
++    "    if r[\"arm\"] in (\"v18-judged\", \"v18-judged-pruned\", \"v18-judged-randprune\"):\n",
++    "        by[r[\"arm\"]].append(r)\n",
++    "\n",
++    "summ = {}\n",
++    "print(f\"\\n{'arm':<22} {'n':>2} {'F1':>6} {'sd':>6} {'P':>6} {'R':>6}\")\n",
++    "for arm in (\"v18-judged\", \"v18-judged-pruned\", \"v18-judged-randprune\"):\n",
++    "    rs = by[arm]\n",
++    "    f = [r[\"f1\"] for r in rs]\n",
++    "    summ[arm] = (st.mean(f), st.stdev(f) if len(f) > 1 else 0.0, len(f))\n",
++    "    print(f\"{arm:<22} {len(f):>2} {st.mean(f):>6.3f} {summ[arm][1]:>6.3f} \"\n",
++    "          f\"{st.mean(r['p'] for r in rs):>6.3f} {st.mean(r['r'] for r in rs):>6.3f}\")\n",
++    "\n",
++    "def diff(a, b):\n",
++    "    (ma, sa, na), (mb, sb, nb) = summ[a], summ[b]\n",
++    "    se = (sa ** 2 / na + sb ** 2 / nb) ** 0.5\n",
++    "    return ma - mb, se, (ma - mb) / se if se else float(\"inf\")\n",
++    "\n",
++    "for a, b in [(\"v18-judged-pruned\", \"v18-judged-randprune\"),\n",
++    "             (\"v18-judged-pruned\", \"v18-judged\")]:\n",
++    "    d, se, z = diff(a, b)\n",
++    "    print(f\"\\n{a} minus {b}: {d:+.3f}  (se {se:.3f}, {z:.1f} se)\")\n",
++    "\n",
++    "print(\"\"\"\n",
++    "reference: v14 pruned beat random-prune by +0.041, v15 by +0.042, both recall-only.\n",
++    "  above ~2 se with recall carrying it   -> replicates on a third generator\n",
++    "  below ~2 se                           -> direction replicates, magnitude does not\n",
++    "                                           resolve at five seeds; report it that way\n",
++    "These are val numbers. Do not compare them with the 0.486 v18 dev figure.\n",
++    "\"\"\")\n",
++    "\n",
++    "# ---------------------------------------------------------------------------\n",
++    "# What pruning removed, by v18 variant.\n",
++    "#\n",
++    "# The removed set is the judged arm minus the pruned arm. Each removed instance is\n",
++    "# traced to the spec that produced it through the sent_id join, and its variant is read\n",
++    "# from the raw generation record.\n",
++    "# ---------------------------------------------------------------------------\n",
++    "SUF = re.compile(r\":s\\d+$\")\n",
++    "gen = POOL_S[0][\"sent_id\"].split(\":\")[1]\n",
++    "variant = {}\n",
++    "for line in (RAW / f\"{gen}.jsonl\").read_text().splitlines():\n",
++    "    if not line:\n",
++    "        continue\n",
++    "    r = json.loads(line)\n",
++    "    if r.get(\"sample\") and not r.get(\"error\"):\n",
++    "        v = r[\"spec\"].get(\"variants\") or ()\n",
++    "        variant[f\"synth:{gen}:{r['spec_index']}\"] = \"+\".join(v) if v else \"plain\"\n",
++    "\n",
++    "key = lambda r: (r[\"sent_id\"], r[\"text\"])\n",
++    "kept = {key(r) for r in arms_s[\"judged-pruned\"]}\n",
++    "judged = arms_s[\"judged\"]\n",
++    "removed = [r for r in judged if key(r) not in kept]\n",
++    "var_of = lambda r: variant.get(SUF.sub(\"\", r[\"sent_id\"]), \"?\")\n",
++    "\n",
++    "all_v, rem_v = Counter(map(var_of, judged)), Counter(map(var_of, removed))\n",
++    "print(f\"{len(removed)} instances removed of {len(judged)} \"\n",
++    "      f\"({len(removed) / len(judged):.1%}), from generation {gen}\\n\")\n",
++    "print(f\"{'variant':<24} {'judged':>8} {'removed':>8} {'removal rate':>13}\")\n",
++    "for v, n in all_v.most_common():\n",
++    "    print(f\"{v:<24} {n:>8} {rem_v[v]:>8} {rem_v[v] / n:>13.3%}\")\n",
++    "\n",
++    "print(\"\\nremoved instances by gold label:\", dict(Counter(r[\"label\"] for r in removed)))\n",
++    "print(\"\"\"\n",
++    "  unlisted removed at a rate well above plain -> the verifier is deleting v18's\n",
++    "     deliberate hard negatives, and part of the gain undoes v18's design. Say so.\n",
++    "  rates roughly equal across variants          -> pruning is not targeting the\n",
++    "     variants, and the gain is not coming from undoing them.\n",
++    "\"\"\")"
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "15",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "import random\n",
++    "unl = [r for r in removed if \"unlisted\" in var_of(r)]\n",
++    "for r in random.Random(0).sample(unl, 20):\n",
++    "    print(r[\"text\"], \"\\n\")"
++   ]
+   }
+  ],
+  "metadata": {
+   "kernelspec": {
+-   "display_name": "Python [conda env:base] *",
++   "display_name": "defaultInterpreterPath: 3.10.13.final.0",
+    "language": "python",
+-   "name": "conda-base-py"
++   "name": "python3"
+   },
+   "language_info": {
+    "codemirror_mode": {
+diff --git a/reports/final_arms.jsonl b/reports/final_arms.jsonl
+index 06d2500..79d235c 100644
+--- a/reports/final_arms.jsonl
++++ b/reports/final_arms.jsonl
+@@ -5,3 +5,9 @@
+ {"arm": "v18-judged-pruned", "seed": 1, "n": 30293, "pos_rate": 0.1546, "f1": 0.4605385329619313, "p": 0.35152374202693126, "r": 0.6675639300134589}
+ {"arm": "v18-judged-pruned", "seed": 2, "n": 30293, "pos_rate": 0.1546, "f1": 0.4923954372623574, "p": 0.38060249816311537, "r": 0.6971736204576043}
+ {"arm": "v18-judged-randprune", "seed": 0, "n": 30293, "pos_rate": 0.1546, "f1": 0.44577205882352944, "p": 0.33845080251221216, "r": 0.6527590847913862}
++{"arm": "v18-judged-randprune", "seed": 1, "n": 30293, "pos_rate": 0.1546, "f1": 0.4274730907227063, "p": 0.34519867549668876, "r": 0.5612382234185733}
++{"arm": "v18-judged-randprune", "seed": 2, "n": 30293, "pos_rate": 0.1546, "f1": 0.45714285714285713, "p": 0.37225042301184436, "r": 0.5921938088829072}
++{"arm": "v18-judged-pruned", "seed": 3, "n": 30293, "pos_rate": 0.1546, "f1": 0.44313011828935395, "p": 0.3347079037800687, "r": 0.6554508748317631}
++{"arm": "v18-judged-pruned", "seed": 4, "n": 30293, "pos_rate": 0.1546, "f1": 0.45731977001326846, "p": 0.34057971014492755, "r": 0.6958277254374159}
++{"arm": "v18-judged-randprune", "seed": 3, "n": 30293, "pos_rate": 0.1546, "f1": 0.4628330995792426, "p": 0.3545845272206304, "r": 0.6662180349932705}
++{"arm": "v18-judged-randprune", "seed": 4, "n": 30293, "pos_rate": 0.1546, "f1": 0.45950864422202004, "p": 0.3470790378006873, "r": 0.6796769851951547}
+diff --git a/tutorial/ddi_tutorial.ipynb b/tutorial/ddi_tutorial.ipynb
+index 5b19d6f..7ec00f6 100644
+--- a/tutorial/ddi_tutorial.ipynb
++++ b/tutorial/ddi_tutorial.ipynb
+@@ -9,9 +9,7 @@
+     "\n",
+     "### Gwilym Hughes, Summer 2026 Internship\n",
+     "\n",
+-    "The main reason for looking towards synthetic training data to train AI models is that annotation is the bottleneck to starting new projects. Getting an LLM to write labelled examples instead skips the bottleneck. In theory the knowledge a large LLM has in it's weights should be sufficient to generate good training data for a smaller model like BERT, ie. distillation. This notebook is the result of an 8-week internship trying this for drug-drug interaction extraction.\n",
+-    "\n",
+-    "DRAFT: This notebook assumes the earlier sentence-level relation extraction tutorial, which shows how a DDI sentence becomes a set of pair instances and how BiomedBERT is trained on them, and it does not repeat that material. What it adds is the data the internship actually produced: a sample of real output from each of five generator versions, drawn from the datasets the logged results were measured on, so that every claim below can be checked against the sentences that produced it rather than against a reconstruction written for the occasion."
++    "The main reason for looking towards synthetic training data to train AI models is that annotation is the bottleneck to starting new projects. Getting an LLM to write labelled examples instead skips the bottleneck. In theory the knowledge a large LLM has in it's weights should be sufficient to generate good training data for a smaller model like BERT, ie. distillation. This notebook is the result of an 8-week internship researching the capabilities of this technique for drug-drug interaction extraction."
+    ]
+   },
+   {
+@@ -21,7 +19,7 @@
+    "source": [
+     "## Setup\n",
+     "\n",
+-    "DRAFT: Everything up to the final optional section runs on a laptop without a GPU and without calling any LLM, because the generated data is already in `samples/` and the logged scores are in `results.json`. The corpus download is only needed for the human comparison sentences."
++    "Everything up to the final optional section should run on a laptop without a GPU and without calling any LLM. Datasets genereated over the course of this internship have been randomly sampled and are stored in `samples/`, along with logged scores from testing in `results.json`. The corpus download is only needed for the human comparison sentences."
+    ]
+   },
+   {
+@@ -33,16 +31,24 @@
+    "source": [
+     "!pip install -q bioc spacy scikit-learn pandas\n",
+     "!python -c \"import spacy; spacy.cli.download('en_core_web_sm')\"\n",
+-    "!curl -sL -o DDICorpus.zip \"https://github.com/isegura/DDICorpus/raw/refs/heads/master/DDICorpus-2013(BRAT).zip\" && unzip -oq DDICorpus.zip"
++    "\n",
++    "# uncomment the following line to download the DDICorpus dataset\n",
++    "# ![ -d ../DDICorpusBrat ] || (cd .. && curl -sL -o DDICorpus.zip \"https://github.com/isegura/DDICorpus/raw/refs/heads/master/DDICorpus-2013(BRAT).zip\" && unzip -oq DDICorpus.zip)"
++   ]
++  },
++  {
++   "cell_type": "markdown",
++   "id": "3",
++   "metadata": {},
++   "source": [
++    "Set up by loading the synthetic and human data."
+    ]
+   },
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "3",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
++   "id": "4",
++   "metadata": {},
+    "outputs": [],
+    "source": [
+     "import math, random, re\n",
+@@ -61,7 +67,145 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "4",
++   "id": "5",
++   "metadata": {},
++   "source": [
++    "## Drug-drug interations and how they are structured\n",
++    "\n",
++    "### The task\n",
++    "\n",
++    "DRAFT: Drug-drug interaction extraction takes a sentence whose drug mentions are already marked and asks, for every pair of those mentions, whether the sentence states that the two interact and, if so, how. This is a label classification problem, each pair becomes a separate copy of the sentence with its two drugs tagged, and a classifier assigns one of five labels, MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking them together, INT for an interaction stated without detail, and NONE. Labels are per each possible pair of drugs in the sentence so NONE labels are dominant, with this dominance increasing with n increasing number of drugs in a sentence. Performance is reported as micro-F1 over the four positive labels.\n",
++    "\n",
++    "### Two ways to utilise an LLM\n",
++    "\n",
++    "Annotating pairs to this standard takes trained annotators working from a detailed guideline, which is the bottleneck synthetic data is meant to remove. An LLM can help this in two ways. It can write new sentences together with their labels, which removes the need for any corpus at all, or it can label sentences that already exist, which removes the annotators but still needs the text. Either the new sentences or the labelled sentences are then used as training data for the downstream model, which in this case is BiomedBERT. Most of this notebook is about generation, because that is what the internship set out to do, and the second appears at the end as a comparison.\n",
++    "\n",
++    "### How a generated sentence is made\n",
++    "\n",
++    "First, a large amount of specifications are made, each spec being a small structured description of one sentence listing which drugs must appear and which pairs among them must stand in which relation, then renders that specification as a prompt. The LLM then generates a structured response holding the new, synthetic sentence. A second, deterministic stage finds each drug in the sentence, tags every pair, and takes each pair's label from the specification. Because the specification states the relations before the sentence exists, we already know the gold annotation, and the labels are correct by construction, assuming the LLM has generated a sentence that follows the specification. This saves generation resources since the LLM doesn't have to correctly output each pair of drugs, in the sentence. It also provides a cheap filter, since sentences in which the pairs given in the specification cannot be recovered from the generated sentence are guaranteed to be malformed. \n",
++    "\n",
++    "```\n",
++    "specification -> prompt -> LLM -> sentence -> pair instances -> BiomedBERT\n",
++    "```\n",
++    "\n",
++    "The following is an example of one spec and sentence from the final generator."
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "6",
++   "metadata": {
++    "lines_to_next_cell": 1
++   },
++   "outputs": [],
++   "source": [
++    "TAGS = re.compile(r\"\\[(E[12])\\](.*?)\\[/\\1\\]\")\n",
++    "\n",
++    "def pair_names(text):\n",
++    "    found = {t: re.sub(r\"\\[/?E[12]\\]\", \"\", name) for t, name in TAGS.findall(text)}\n",
++    "    return found.get(\"E1\"), found.get(\"E2\")\n",
++    "\n",
++    "rec = next(r for r in synth[\"v18\"]\n",
++    "           if r[\"spec\"] and r[\"spec\"].get(\"positives\") and r[\"n_entities\"] >= 3)\n",
++    "spec = rec[\"spec\"]\n",
++    "# entity keys run A, B, C ... in the order the specification lists them\n",
++    "surface = dict(zip(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", spec.get(\"entities\") or []))\n",
++    "\n",
++    "print(\"assertions \", spec.get(\"assertions\"))\n",
++    "print(\"modifiers  \", spec.get(\"modifiers\"))\n",
++    "print(\"variants   \", spec.get(\"variants\"))\n",
++    "print(\"\\ntarget labels\")\n",
++    "for p in spec[\"positives\"]:\n",
++    "    a, b = p[\"between\"]\n",
++    "    print(f\"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}\")\n",
++    "print(\"\\nwhat the model wrote\\n \", rec[\"sentence\"], \"\\n\")\n",
++    "\n",
++    "pd.DataFrame([{\"drug A\": x, \"drug B\": y, \"label\": p[\"label\"]}\n",
++    "              for p in rec[\"pairs\"] for x, y in [pair_names(p[\"text\"])]])"
++   ]
++  },
++  {
++   "cell_type": "markdown",
++   "id": "7",
++   "metadata": {},
++   "source": [
++    "The pairs the specification names come out with its labels and every other pair comes out NONE, which is how a single generated sentence supplies negative examples as well as positive ones. Whether the model's sentence actually says what the specification asked for is a separate question, which the project checked with a second model pass.\n",
++    "\n",
++    "### One record shape for every dataset\n",
++    "\n",
++    "DRAFT: Everything the notebook analyses, generated or real, is held as a list of sentence records of one shape. A record keeps the plain sentence, how many drugs it mentions, all of its pair instances with their labels, and, for generated sentences, the specification that produced it. Records are per sentence rather than per pair because every argument below is about sentences: how many drugs they carry, which construction built them, and how the labels among their pairs are distributed. Real sentences use the same shape with the specification left empty, so each diagnostic is written once and applied to all six datasets."
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "8",
++   "metadata": {},
++   "outputs": [],
++   "source": [
++    "def shape(record):\n",
++    "    def show(v):\n",
++    "        if isinstance(v, list):\n",
++    "            return f\"list of {len(v)}\"\n",
++    "        if isinstance(v, dict):\n",
++    "            return \"specification: \" + \", \".join(sorted(v))\n",
++    "        if isinstance(v, str) and len(v) > 60:\n",
++    "            return v[:57] + \"...\"\n",
++    "        return v\n",
++    "    return {k: show(v) for k, v in record.items()}\n",
++    "\n",
++    "pd.DataFrame({\"generated (v18)\": shape(rec), \"real\": shape(human[0])})"
++   ]
++  },
++  {
++   "cell_type": "markdown",
++   "id": "9",
++   "metadata": {},
++   "source": [
++    "DRAFT: Real sentences are built with the project's own pair construction, which makes one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so mixing the two builders would silently double the counts in any comparison between real and generated data.\n",
++    "\n",
++    "### Where the data and the numbers come from\n",
++    "\n",
++    "DRAFT: Nothing in this notebook is regenerated or retrained in order to make a point. The generated sentences are samples of 400 drawn from the datasets the logged results were measured on, one per generator version, and each is joined back to the specification that produced it wherever the raw generation file survived; v13's did not. The scores are read from `results.json`, which is rebuilt from the project's run records and stores beside each figure the ids of the runs behind it. The specification builders used later are the project's own code, run live, since building a specification costs nothing."
++   ]
++  },
++  {
++   "cell_type": "code",
++   "execution_count": null,
++   "id": "10",
++   "metadata": {
++    "lines_to_next_cell": 1
++   },
++   "outputs": [],
++   "source": [
++    "cols = [\"dataset_id\", \"gen_id\", \"sentences_available\", \"sentences_sampled\",\n",
++    "        \"raw_file_found\", \"specs_joined\"]\n",
++    "man = pd.DataFrame(lib.sample_manifest()).T\n",
++    "display(man[[c for c in cols if c in man.columns]])\n",
++    "\n",
++    "v18 = lib.results()[\"trajectory\"][\"v18\"]\n",
++    "print(f\"v18 scored {v18['f1']} (sd {v18['sd']}) over {v18['n_seeds']} seeds, \"\n",
++    "      f\"from runs {', '.join(v18['run_ids'])}\")"
++   ]
++  },
++  {
++   "cell_type": "markdown",
++   "id": "11",
++   "metadata": {},
++   "source": [
++    "### What is hidden and what is shown\n",
++    "\n",
++    "DRAFT: The helper file `lib.py` holds anything that would be copied unchanged into another project: loading the samples and the corpus sentences, turning records back into instances, masking drug names, the guessing game, and training. Every diagnostic is written out in the notebook itself, because in each case the few lines of code are the explanation, and hiding them behind a function would leave only a name to trust.\n",
++    "\n",
++    "### How the rest is arranged\n",
++    "\n",
++    "DRAFT: The sections follow the order in which the internship found things. Each generator removed one problem and exposed the next, and for the first two problems the notebook asks the reader to exploit the problem by hand before measuring it, first with a rule that sees only how many drugs a sentence mentions and then with a guessing game on masked sentences. After that come how the fix was found in the real corpus, the fix itself, how to extend the generator, what every version scored, and finally the comparison with labelling real text."
++   ]
++  },
++  {
++   "cell_type": "markdown",
++   "id": "12",
+    "metadata": {},
+    "source": [
+     "## What each generator actually produced\n",
+@@ -72,7 +216,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "5",
++   "id": "13",
+    "metadata": {
+     "lines_to_next_cell": 1
+    },
+@@ -94,7 +238,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "6",
++   "id": "14",
+    "metadata": {},
+    "source": [
+     "DRAFT: The v13 row is the one to look at. Almost every sentence it wrote contains exactly one pair, and that pair is almost always positive, which is exactly what was asked of it (write a sentence in which these two drugs interact) and exactly what makes it useless, because real sentences contain several drugs and most of the pairs among them are NONE. The mean against the median for the human row is also worth a moment: a small number of sentences enumerate dozens of drugs and produce hundreds of pairs each, so the mean is dragged far above what a typical sentence looks like."
+@@ -102,7 +246,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "7",
++   "id": "15",
+    "metadata": {},
+    "source": [
+     "## Shortcut one: count the drugs\n",
+@@ -113,7 +257,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "8",
++   "id": "16",
+    "metadata": {
+     "lines_to_next_cell": 1
+    },
+@@ -131,16 +275,16 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "9",
++   "id": "17",
+    "metadata": {},
+    "source": [
+-    "DRAFT: A rule that ignores every word in the sentence does very well on v13 and badly on real text. A classifier trained on v13 finds the same rule, because it is the shortest route to a low loss on that data, and then applies it to real sentences where it no longer holds. This is the composition shortcut, and the table below is the diagnostic that exposed it."
++    "DRAFT: A rule that ignores every word in the sentence does very well on v13 and badly on real text. A classifier trained on v13 finds the same rule, because it is the shortest route to a low loss on that data, and then applies it to real sentences where it no longer holds. This is the composition shortcut, and the table below is the diagnostic that exposed it. The empty cells in v13's column are not missing data but the finding itself, since the generator never once wrote a sentence mentioning more than two drugs."
+    ]
+   },
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "10",
++   "id": "18",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -151,12 +295,13 @@
+     "            buckets[min(r[\"n_entities\"], 6)].append(p[\"label\"] != \"NONE\")\n",
+     "    return {k: round(sum(v) / len(v), 3) for k, v in sorted(buckets.items())}\n",
+     "\n",
+-    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}).rename_axis(\"drugs (6 = six or more)\")"
++    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \\\n",
++    "  .rename_axis(\"drugs (6 = six or more)\").fillna(\"none written\")"
+    ]
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "11",
++   "id": "19",
+    "metadata": {},
+    "source": [
+     "## Shortcut two: read the construction\n",
+@@ -167,7 +312,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "12",
++   "id": "20",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -178,7 +323,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "13",
++   "id": "21",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -188,7 +333,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "14",
++   "id": "22",
+    "metadata": {},
+    "source": [
+     "DRAFT: Now play the same game on real sentences."
+@@ -197,7 +342,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "15",
++   "id": "23",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -208,7 +353,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "16",
++   "id": "24",
+    "metadata": {
+     "lines_to_next_cell": 1
+    },
+@@ -220,16 +365,18 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "17",
++   "id": "25",
+    "metadata": {},
+    "source": [
+-    "DRAFT: The first game is noticeably easier, and the reason is printed beside each answer. v17 wrote every sentence from one of about twenty named constructions taken from the annotation guidelines, and each construction always produced the same label, so a denial was always NONE and an effect statement was always positive. Real sentences do not work like that, since a sentence full of effect vocabulary can still say nothing about the pair in question. The measurement that makes this precise asks how much of the uncertainty about a sentence's label is removed by knowing its construction."
++    "DRAFT: Scored on accuracy alone, the two games come out about the same for anyone who knows the domain, and I got 9 of 10 on each. What differs is how the answers were reached. On the generated sentences every NONE was given away by the wording used to describe a drug that takes no part in the relation, phrases such as \"part of the background regimen\", \"used if the first choice is unsuitable\" and \"prescribed for an unrelated condition\", so no pharmacology was needed at all, whereas on the real sentences each answer had to come from reading the relation itself. A classifier takes the cheaper route whenever one exists, and the generated data offered one.\n",
++    "\n",
++    "Both of my misses were conventions rather than pharmacology. On the generated side it was v17's `incompatible` construction, which the generator always labels NONE while the one real corpus sentence using it is positive, and on the real side it looked like a guideline convention case. The measurement that makes the difference in route precise asks how much of the uncertainty about a sentence's label is removed by knowing its construction."
+    ]
+   },
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "18",
++   "id": "26",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -260,7 +407,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "19",
++   "id": "27",
+    "metadata": {},
+    "source": [
+     "DRAFT: A value of 1.0 would be harmless on its own if the construction were invisible in the finished sentence, but it is not, and a bag-of-words model with the drug names masked out can name the construction from the text."
+@@ -269,7 +416,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "20",
++   "id": "28",
+    "metadata": {
+     "lines_to_next_cell": 1
+    },
+@@ -289,16 +436,18 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "21",
++   "id": "29",
+    "metadata": {},
+    "source": [
+-    "DRAFT: So the words give away the construction and the construction gives away the label, which is a complete route from surface to answer that never passes through the question of whether these two drugs interact. The most repeated phrases in the generated text show where the words came from."
++    "DRAFT: On this 400-sentence sample the construction is recovered about three times in four against a chance rate of one in nineteen. On the full 5,702-sentence dataset the same test reaches 0.961, the difference most likely being the amount of training data per class rather than anything about the text, since three-fold cross-validation over 400 sentences leaves about fourteen examples of each construction to learn from.\n",
++    "\n",
++    "So the words give away the construction and the construction gives away the label, which is a complete route from surface to answer that never passes through the question of whether these two drugs interact. The most repeated phrases in the generated text show where the words came from."
+    ]
+   },
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "22",
++   "id": "30",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -315,7 +464,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "23",
++   "id": "31",
+    "metadata": {},
+    "source": [
+     "DRAFT: v17 described each non-participating drug using one of seven fixed phrases, such as \"started before the others and since stopped\", and those seven phrases supplied the most repeated 4-grams in the entire generated corpus. Worse, every negative construction had been written to avoid effect vocabulary, so the classifier learned that words like caused and prolonged mean positive and that denial language means NONE, neither of which holds in real text."
+@@ -323,7 +472,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "24",
++   "id": "32",
+    "metadata": {},
+    "source": [
+     "## Finding the fix in the real corpus\n",
+@@ -334,7 +483,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "25",
++   "id": "33",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -369,7 +518,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "26",
++   "id": "34",
+    "metadata": {},
+    "source": [
+     "DRAFT: Look at appositive and coordinate. Neither is the main clause of a single real sentence, yet v17 sampled them as though they were alternatives to mechanism and denial, and made appositive sentences positive every time against a corpus rate near four in ten. These are not assertions at all but ways of packaging one, and that observation is the whole of the fix."
+@@ -377,7 +526,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "27",
++   "id": "35",
+    "metadata": {},
+    "source": [
+     "## The fix: two axes\n",
+@@ -388,7 +537,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "28",
++   "id": "36",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -406,7 +555,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "29",
++   "id": "37",
+    "metadata": {},
+    "source": [
+     "DRAFT: The same measurement as before, now on v18's assertion sets and on the real corpus's constructions. The target is not zero, because real constructions do carry some information about the label, and a generator that drove this to zero would be writing denials that are as often positive as negative, which is its own artefact. The target is the corpus."
+@@ -415,7 +564,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "30",
++   "id": "38",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -432,7 +581,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "31",
++   "id": "39",
+    "metadata": {},
+    "source": [
+     "DRAFT: v18 did not just come down from 1.0, it landed within about a hundredth of the corpus. In the logged runs this change took F1 from 0.391 to 0.486, and the whole of the gain was in recall, which went from 0.403 to 0.628 while precision barely moved. That is the signature of a shortcut being removed: the classifier stops relying on a cue that real text does not contain and starts predicting on sentences it previously had no handle on."
+@@ -440,7 +589,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "32",
++   "id": "40",
+    "metadata": {},
+    "source": [
+     "## Extending the generator\n",
+@@ -451,7 +600,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "33",
++   "id": "41",
+    "metadata": {
+     "lines_to_next_cell": 1
+    },
+@@ -462,7 +611,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "34",
++   "id": "42",
+    "metadata": {},
+    "source": [
+     "DRAFT: Here is a new assertion for protein-binding displacement, a real mechanism the inventory does not cover. It is registered, specs are built, and the registry is restored afterwards so the rest of the notebook is unaffected."
+@@ -471,7 +620,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "35",
++   "id": "43",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -499,7 +648,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "36",
++   "id": "44",
+    "metadata": {},
+    "source": [
+     "DRAFT: A positive assertion on its own ought to produce a positive sentence every time, and it comes out at roughly three in four instead. That is deliberate and it is inherited rather than written: v18's `unlisted` variant retargets about a quarter of positive assertions at a drug that is not in the sentence's list, which turns them NONE, so a new assertion cannot become a fresh label-pure shortcut however carelessly it is written. Everything in this section costs nothing, because it all happens before a single sentence is generated, and that is the practical lesson: check a design in spec space first, and only pay for generation once the numbers there look right.\n",
+@@ -509,7 +658,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "37",
++   "id": "45",
+    "metadata": {},
+    "source": [
+     "## What the versions scored\n",
+@@ -520,7 +669,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "38",
++   "id": "46",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -530,7 +679,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "39",
++   "id": "47",
+    "metadata": {},
+    "source": [
+     "DRAFT: Two caveats belong next to this table. The v13 figure is a single seed and was measured on a version of the v13 data padded with extra negatives, not on the raw generation sampled above. And the human baseline these should be read against is about 0.79, which is not comparable to the 0.85 to 0.90 reported in much of the DDI-2013 literature, because those papers usually delete trivially negative pairs before training and evaluation and this project does not."
+@@ -538,7 +687,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "40",
++   "id": "48",
+    "metadata": {},
+    "source": [
+     "## The comparison that reframed it\n",
+@@ -549,7 +698,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "41",
++   "id": "49",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -559,7 +708,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "42",
++   "id": "50",
+    "metadata": {},
+    "source": [
+     "DRAFT: Swapping human labels for LLM labels on real text costs 0.128, and swapping real text for generated text costs a further 0.195, so the text matters more than the labels even though the generated labels are correct by construction and the LLM's own labels are noticeably wrong, over-predicting positives with precision well below human while recall is slightly above it.\n",
+@@ -570,7 +719,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "43",
++   "id": "51",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -581,7 +730,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "44",
++   "id": "52",
+    "metadata": {},
+    "source": [
+     "DRAFT: At 250 sentences the LLM-labelled arm scores higher than the human-labelled one, and above roughly 400 the order reverses and the gap widens. With five seeds the difference at 250 is about one and a half standard errors, so it is a weak signal rather than a finding, but if it holds it says that LLM labels are worth most when real annotation is scarcest, which is exactly the situation synthetic data was supposed to rescue."
+@@ -589,7 +738,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "45",
++   "id": "53",
+    "metadata": {},
+    "source": [
+     "## Optional: train on a sample\n",
+@@ -600,7 +749,7 @@
+   {
+    "cell_type": "code",
+    "execution_count": null,
+-   "id": "46",
++   "id": "54",
+    "metadata": {},
+    "outputs": [],
+    "source": [
+@@ -611,7 +760,7 @@
+   },
+   {
+    "cell_type": "markdown",
+-   "id": "47",
++   "id": "55",
+    "metadata": {},
+    "source": [
+     "## What we would do differently\n",
+@@ -626,11 +775,6 @@
+    "main_language": "python",
+    "notebook_metadata_filter": "-all"
+   },
+-  "kernelspec": {
+-   "display_name": "base",
+-   "language": "python",
+-   "name": "python3"
+-  },
+   "language_info": {
+    "codemirror_mode": {
+     "name": "ipython",
+@@ -641,7 +785,7 @@
+    "name": "python",
+    "nbconvert_exporter": "python",
+    "pygments_lexer": "ipython3",
+-   "version": "3.13.5"
++   "version": "3.12.3"
+   }
+  },
+  "nbformat": 4,
+diff --git a/tutorial/ddi_tutorial.py b/tutorial/ddi_tutorial.py
+index 9e323a1..340b991 100644
+--- a/tutorial/ddi_tutorial.py
++++ b/tutorial/ddi_tutorial.py
+@@ -31,6 +31,101 @@ human = human_sentences("train", n=400, seed=0)
+ data = {"human": human, **synth}
+ {k: len(v) for k, v in data.items()}
+ 
++# %% [markdown]
++# ## The problem, and how this notebook is built
++#
++# DRAFT: This section sets out the task, the idea being tested, and how the code in the rest of the notebook is organised, so that each later cell can be read as one step in an argument rather than as a standalone piece of code.
++#
++# ### The task
++#
++# DRAFT: Drug-drug interaction extraction takes a sentence whose drug mentions are already marked and asks, for every pair of those mentions, whether the sentence states that the two interact and, if so, how. The earlier tutorial treats this as classification: each pair becomes a separate copy of the sentence with its two drugs tagged, and a classifier assigns one of five labels, MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking them together, INT for an interaction stated without detail, and NONE. The label belongs to the pair rather than to the sentence, so a sentence naming four drugs yields six instances that can each carry a different label, and about five pairs in six in the corpus are NONE. Performance is reported as micro-F1 over the four positive labels, since counting NONE would reward a model that never predicts anything else.
++#
++# ### Two ways to spend an LLM
++#
++# DRAFT: Annotating pairs to this standard takes trained annotators working from a detailed guideline, which is the bottleneck synthetic data is meant to remove. An LLM can help in two ways. It can write new sentences together with their labels, which removes the need for any corpus at all, or it can label sentences that already exist, which removes the annotators but still needs the text. Most of this notebook is about the first, because that is what the internship set out to do, and the second appears at the end as the comparison that changed how the first should be judged.
++#
++# ### How a generated sentence is made
++#
++# DRAFT: The generator never asks the model to label anything. It first builds a specification, a small structured description of one sentence listing which drugs must appear and which pairs among them must stand in which relation, then renders that specification as a prompt and stores the model's sentence beside the specification that produced it. A second, deterministic stage finds each drug in the sentence, tags every pair, and takes each pair's label from the specification. Because the specification states the relations before the sentence exists, it is the gold annotation, and the labels are correct by construction. Keeping the two stages apart means the expensive, non-deterministic step never has to be repeated when the way instances are extracted changes.
++#
++# ```
++# specification -> prompt -> LLM -> sentence -> pair instances -> BiomedBERT
++# ```
++#
++# Here is one sentence from the final generator, v18, as it was actually produced, with its specification and the pair labels taken from it.
++
++# %%
++TAGS = re.compile(r"\[(E[12])\](.*?)\[/\1\]")
++
++def pair_names(text):
++    found = {t: re.sub(r"\[/?E[12]\]", "", name) for t, name in TAGS.findall(text)}
++    return found.get("E1"), found.get("E2")
++
++rec = next(r for r in synth["v18"]
++           if r["spec"] and r["spec"].get("positives") and r["n_entities"] >= 3)
++spec = rec["spec"]
++# entity keys run A, B, C ... in the order the specification lists them
++surface = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", spec.get("entities") or []))
++
++print("assertions ", spec.get("assertions"))
++print("modifiers  ", spec.get("modifiers"))
++print("variants   ", spec.get("variants"))
++print("\ngold, as the specification states it")
++for p in spec["positives"]:
++    a, b = p["between"]
++    print(f"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}")
++print("\nwhat the model wrote\n ", rec["sentence"], "\n")
++
++pd.DataFrame([{"drug A": x, "drug B": y, "label": p["label"]}
++              for p in rec["pairs"] for x, y in [pair_names(p["text"])]])
++
++# %% [markdown]
++# DRAFT: The pairs the specification names come out with its labels and every other pair comes out NONE, which is how a single generated sentence supplies negative examples as well as positive ones. Whether the model's sentence actually says what the specification asked for is a separate question, which the project checked with a second model pass.
++#
++# ### One record shape for every dataset
++#
++# DRAFT: Everything the notebook analyses, generated or real, is held as a list of sentence records of one shape. A record keeps the plain sentence, how many drugs it mentions, all of its pair instances with their labels, and, for generated sentences, the specification that produced it. Records are per sentence rather than per pair because every argument below is about sentences: how many drugs they carry, which construction built them, and how the labels among their pairs are distributed. Real sentences use the same shape with the specification left empty, so each diagnostic is written once and applied to all six datasets.
++
++# %%
++def shape(record):
++    def show(v):
++        if isinstance(v, list):
++            return f"list of {len(v)}"
++        if isinstance(v, dict):
++            return "specification: " + ", ".join(sorted(v))
++        if isinstance(v, str) and len(v) > 60:
++            return v[:57] + "..."
++        return v
++    return {k: show(v) for k, v in record.items()}
++
++pd.DataFrame({"generated (v18)": shape(rec), "real": shape(human[0])})
++
++# %% [markdown]
++# DRAFT: Real sentences are built with the project's own pair construction, which makes one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so mixing the two builders would silently double the counts in any comparison between real and generated data.
++#
++# ### Where the data and the numbers come from
++#
++# DRAFT: Nothing in this notebook is regenerated or retrained in order to make a point. The generated sentences are samples of 400 drawn from the datasets the logged results were measured on, one per generator version, and each is joined back to the specification that produced it wherever the raw generation file survived; v13's did not. The scores are read from `results.json`, which is rebuilt from the project's run records and stores beside each figure the ids of the runs behind it. The specification builders used later are the project's own code, run live, since building a specification costs nothing.
++
++# %%
++cols = ["dataset_id", "gen_id", "sentences_available", "sentences_sampled",
++        "raw_file_found", "specs_joined"]
++man = pd.DataFrame(lib.sample_manifest()).T
++display(man[[c for c in cols if c in man.columns]])
++
++v18 = lib.results()["trajectory"]["v18"]
++print(f"v18 scored {v18['f1']} (sd {v18['sd']}) over {v18['n_seeds']} seeds, "
++      f"from runs {', '.join(v18['run_ids'])}")
++
++# %% [markdown]
++# ### What is hidden and what is shown
++#
++# DRAFT: The helper file `lib.py` holds anything that would be copied unchanged into another project: loading the samples and the corpus sentences, turning records back into instances, masking drug names, the guessing game, and training. Every diagnostic is written out in the notebook itself, because in each case the few lines of code are the explanation, and hiding them behind a function would leave only a name to trust.
++#
++# ### How the rest is arranged
++#
++# DRAFT: The sections follow the order in which the internship found things. Each generator removed one problem and exposed the next, and for the first two problems the notebook asks the reader to exploit the problem by hand before measuring it, first with a rule that sees only how many drugs a sentence mentions and then with a guessing game on masked sentences. After that come how the fix was found in the real corpus, the fix itself, how to extend the generator, what every version scored, and finally the comparison with labelling real text.
++
+ # %% [markdown]
+ # ## What each generator actually produced
+ #
+diff --git a/tutorial/executed.ipynb b/tutorial/executed.ipynb
+index 5305130..f233d16 100644
+--- a/tutorial/executed.ipynb
++++ b/tutorial/executed.ipynb
+@@ -151,8 +151,7 @@
+     "            buckets[min(r[\"n_entities\"], 6)].append(p[\"label\"] != \"NONE\")\n",
+     "    return {k: round(sum(v) / len(v), 3) for k, v in sorted(buckets.items())}\n",
+     "\n",
+-    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \\\n",
+-    "  .rename_axis(\"drugs (6 = six or more)\").fillna(\"none written\")"
++    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}).rename_axis(\"drugs (6 = six or more)\")"
+    ]
+   },
+   {
+@@ -183,7 +182,7 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "my_guesses = [\"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\"]   # edit: add 10 guesses (\"POS\" or \"NONE\")\n",
++    "my_guesses = [\"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\"]   # edit\n",
+     "game.score(my_guesses)"
+    ]
+   },
+@@ -628,7 +627,7 @@
+    "notebook_metadata_filter": "-all"
+   },
+   "kernelspec": {
+-   "display_name": "Python 3",
++   "display_name": "base",
+    "language": "python",
+    "name": "python3"
+   },
+diff --git a/tutorial/lib.py b/tutorial/lib.py
+index 1944d64..cca6087 100644
+--- a/tutorial/lib.py
++++ b/tutorial/lib.py
+@@ -68,7 +68,7 @@ def human_sentences(split="train", n=None, seed=0):
+     ids = sorted(grouped)
+     if n is not None:
+         ids = sorted(random.Random(seed).sample(ids, min(n, len(ids))))
+-    return [{"version": f"human-{split}", "sent_id": sid,
++    return [{"version": f"human-{split}", "dataset_id": None, "gen_id": None, "sent_id": sid,
+              "sentence": _strip(grouped[sid][0]["text"]),
+              "n_entities": len(_sentence_spans(grouped[sid])),
+              "pairs": [{"text": r["text"], "label": r["label"]} for r in grouped[sid]],

@@ -68,7 +68,7 @@ def human_sentences(split="train", n=None, seed=0):
     ids = sorted(grouped)
     if n is not None:
         ids = sorted(random.Random(seed).sample(ids, min(n, len(ids))))
-    return [{"version": f"human-{split}", "sent_id": sid,
+    return [{"version": f"human-{split}", "dataset_id": None, "gen_id": None, "sent_id": sid,
              "sentence": _strip(grouped[sid][0]["text"]),
              "n_entities": len(_sentence_spans(grouped[sid])),
              "pairs": [{"text": r["text"], "label": r["label"]} for r in grouped[sid]],

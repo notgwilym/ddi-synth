@@ -32,6 +32,101 @@ data = {"human": human, **synth}
 {k: len(v) for k, v in data.items()}
 
 # %% [markdown]
+# ## The problem, and how this notebook is built
+#
+# DRAFT: This section sets out the task, the idea being tested, and how the code in the rest of the notebook is organised, so that each later cell can be read as one step in an argument rather than as a standalone piece of code.
+#
+# ### The task
+#
+# DRAFT: Drug-drug interaction extraction takes a sentence whose drug mentions are already marked and asks, for every pair of those mentions, whether the sentence states that the two interact and, if so, how. The earlier tutorial treats this as classification: each pair becomes a separate copy of the sentence with its two drugs tagged, and a classifier assigns one of five labels, MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking them together, INT for an interaction stated without detail, and NONE. The label belongs to the pair rather than to the sentence, so a sentence naming four drugs yields six instances that can each carry a different label, and about five pairs in six in the corpus are NONE. Performance is reported as micro-F1 over the four positive labels, since counting NONE would reward a model that never predicts anything else.
+#
+# ### Two ways to spend an LLM
+#
+# DRAFT: Annotating pairs to this standard takes trained annotators working from a detailed guideline, which is the bottleneck synthetic data is meant to remove. An LLM can help in two ways. It can write new sentences together with their labels, which removes the need for any corpus at all, or it can label sentences that already exist, which removes the annotators but still needs the text. Most of this notebook is about the first, because that is what the internship set out to do, and the second appears at the end as the comparison that changed how the first should be judged.
+#
+# ### How a generated sentence is made
+#
+# DRAFT: The generator never asks the model to label anything. It first builds a specification, a small structured description of one sentence listing which drugs must appear and which pairs among them must stand in which relation, then renders that specification as a prompt and stores the model's sentence beside the specification that produced it. A second, deterministic stage finds each drug in the sentence, tags every pair, and takes each pair's label from the specification. Because the specification states the relations before the sentence exists, it is the gold annotation, and the labels are correct by construction. Keeping the two stages apart means the expensive, non-deterministic step never has to be repeated when the way instances are extracted changes.
+#
+# ```
+# specification -> prompt -> LLM -> sentence -> pair instances -> BiomedBERT
+# ```
+#
+# Here is one sentence from the final generator, v18, as it was actually produced, with its specification and the pair labels taken from it.
+
+# %%
+TAGS = re.compile(r"\[(E[12])\](.*?)\[/\1\]")
+
+def pair_names(text):
+    found = {t: re.sub(r"\[/?E[12]\]", "", name) for t, name in TAGS.findall(text)}
+    return found.get("E1"), found.get("E2")
+
+rec = next(r for r in synth["v18"]
+           if r["spec"] and r["spec"].get("positives") and r["n_entities"] >= 3)
+spec = rec["spec"]
+# entity keys run A, B, C ... in the order the specification lists them
+surface = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", spec.get("entities") or []))
+
+print("assertions ", spec.get("assertions"))
+print("modifiers  ", spec.get("modifiers"))
+print("variants   ", spec.get("variants"))
+print("\ngold, as the specification states it")
+for p in spec["positives"]:
+    a, b = p["between"]
+    print(f"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}")
+print("\nwhat the model wrote\n ", rec["sentence"], "\n")
+
+pd.DataFrame([{"drug A": x, "drug B": y, "label": p["label"]}
+              for p in rec["pairs"] for x, y in [pair_names(p["text"])]])
+
+# %% [markdown]
+# DRAFT: The pairs the specification names come out with its labels and every other pair comes out NONE, which is how a single generated sentence supplies negative examples as well as positive ones. Whether the model's sentence actually says what the specification asked for is a separate question, which the project checked with a second model pass.
+#
+# ### One record shape for every dataset
+#
+# DRAFT: Everything the notebook analyses, generated or real, is held as a list of sentence records of one shape. A record keeps the plain sentence, how many drugs it mentions, all of its pair instances with their labels, and, for generated sentences, the specification that produced it. Records are per sentence rather than per pair because every argument below is about sentences: how many drugs they carry, which construction built them, and how the labels among their pairs are distributed. Real sentences use the same shape with the specification left empty, so each diagnostic is written once and applied to all six datasets.
+
+# %%
+def shape(record):
+    def show(v):
+        if isinstance(v, list):
+            return f"list of {len(v)}"
+        if isinstance(v, dict):
+            return "specification: " + ", ".join(sorted(v))
+        if isinstance(v, str) and len(v) > 60:
+            return v[:57] + "..."
+        return v
+    return {k: show(v) for k, v in record.items()}
+
+pd.DataFrame({"generated (v18)": shape(rec), "real": shape(human[0])})
+
+# %% [markdown]
+# DRAFT: Real sentences are built with the project's own pair construction, which makes one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so mixing the two builders would silently double the counts in any comparison between real and generated data.
+#
+# ### Where the data and the numbers come from
+#
+# DRAFT: Nothing in this notebook is regenerated or retrained in order to make a point. The generated sentences are samples of 400 drawn from the datasets the logged results were measured on, one per generator version, and each is joined back to the specification that produced it wherever the raw generation file survived; v13's did not. The scores are read from `results.json`, which is rebuilt from the project's run records and stores beside each figure the ids of the runs behind it. The specification builders used later are the project's own code, run live, since building a specification costs nothing.
+
+# %%
+cols = ["dataset_id", "gen_id", "sentences_available", "sentences_sampled",
+        "raw_file_found", "specs_joined"]
+man = pd.DataFrame(lib.sample_manifest()).T
+display(man[[c for c in cols if c in man.columns]])
+
+v18 = lib.results()["trajectory"]["v18"]
+print(f"v18 scored {v18['f1']} (sd {v18['sd']}) over {v18['n_seeds']} seeds, "
+      f"from runs {', '.join(v18['run_ids'])}")
+
+# %% [markdown]
+# ### What is hidden and what is shown
+#
+# DRAFT: The helper file `lib.py` holds anything that would be copied unchanged into another project: loading the samples and the corpus sentences, turning records back into instances, masking drug names, the guessing game, and training. Every diagnostic is written out in the notebook itself, because in each case the few lines of code are the explanation, and hiding them behind a function would leave only a name to trust.
+#
+# ### How the rest is arranged
+#
+# DRAFT: The sections follow the order in which the internship found things. Each generator removed one problem and exposed the next, and for the first two problems the notebook asks the reader to exploit the problem by hand before measuring it, first with a rule that sees only how many drugs a sentence mentions and then with a guessing game on masked sentences. After that come how the fix was found in the real corpus, the fix itself, how to extend the generator, what every version scored, and finally the comparison with labelling real text.
+
+# %% [markdown]
 # ## What each generator actually produced
 #
 # DRAFT: Before any model is trained, the simplest description of a dataset is how many drugs its sentences mention, how many pairs that produces, and what fraction of those pairs are positive, and it is worth looking at this table for a while before reading on because most of the story of the internship is already in it.

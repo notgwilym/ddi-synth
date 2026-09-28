@@ -1,0 +1,42 @@
+diff --git a/reports/final_arms.jsonl b/reports/final_arms.jsonl
+index 06d2500..1412d55 100644
+--- a/reports/final_arms.jsonl
++++ b/reports/final_arms.jsonl
+@@ -5,3 +5,5 @@
+ {"arm": "v18-judged-pruned", "seed": 1, "n": 30293, "pos_rate": 0.1546, "f1": 0.4605385329619313, "p": 0.35152374202693126, "r": 0.6675639300134589}
+ {"arm": "v18-judged-pruned", "seed": 2, "n": 30293, "pos_rate": 0.1546, "f1": 0.4923954372623574, "p": 0.38060249816311537, "r": 0.6971736204576043}
+ {"arm": "v18-judged-randprune", "seed": 0, "n": 30293, "pos_rate": 0.1546, "f1": 0.44577205882352944, "p": 0.33845080251221216, "r": 0.6527590847913862}
++{"arm": "v18-judged-randprune", "seed": 1, "n": 30293, "pos_rate": 0.1546, "f1": 0.4274730907227063, "p": 0.34519867549668876, "r": 0.5612382234185733}
++{"arm": "v18-judged-randprune", "seed": 2, "n": 30293, "pos_rate": 0.1546, "f1": 0.45714285714285713, "p": 0.37225042301184436, "r": 0.5921938088829072}
+diff --git a/tutorial/executed.ipynb b/tutorial/executed.ipynb
+index 5305130..f233d16 100644
+--- a/tutorial/executed.ipynb
++++ b/tutorial/executed.ipynb
+@@ -151,8 +151,7 @@
+     "            buckets[min(r[\"n_entities\"], 6)].append(p[\"label\"] != \"NONE\")\n",
+     "    return {k: round(sum(v) / len(v), 3) for k, v in sorted(buckets.items())}\n",
+     "\n",
+-    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \\\n",
+-    "  .rename_axis(\"drugs (6 = six or more)\").fillna(\"none written\")"
++    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}).rename_axis(\"drugs (6 = six or more)\")"
+    ]
+   },
+   {
+@@ -183,7 +182,7 @@
+    "metadata": {},
+    "outputs": [],
+    "source": [
+-    "my_guesses = [\"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\", \"NONE\"]   # edit: add 10 guesses (\"POS\" or \"NONE\")\n",
++    "my_guesses = [\"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\"]   # edit\n",
+     "game.score(my_guesses)"
+    ]
+   },
+@@ -628,7 +627,7 @@
+    "notebook_metadata_filter": "-all"
+   },
+   "kernelspec": {
+-   "display_name": "Python 3",
++   "display_name": "base",
+    "language": "python",
+    "name": "python3"
+   },
