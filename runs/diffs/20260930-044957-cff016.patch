@@ -1,0 +1,1229 @@
+diff --git a/tutorial/ddi_tutorial.ipynb b/tutorial/ddi_tutorial.ipynb
+deleted file mode 100644
+index 7ec00f6..0000000
+--- a/tutorial/ddi_tutorial.ipynb
++++ /dev/null
+@@ -1,793 +0,0 @@
+-{
+- "cells": [
+-  {
+-   "cell_type": "markdown",
+-   "id": "0",
+-   "metadata": {},
+-   "source": [
+-    "# Can an LLM write training data for a BERT model?\n",
+-    "\n",
+-    "### Gwilym Hughes, Summer 2026 Internship\n",
+-    "\n",
+-    "The main reason for looking towards synthetic training data to train AI models is that annotation is the bottleneck to starting new projects. Getting an LLM to write labelled examples instead skips the bottleneck. In theory the knowledge a large LLM has in it's weights should be sufficient to generate good training data for a smaller model like BERT, ie. distillation. This notebook is the result of an 8-week internship researching the capabilities of this technique for drug-drug interaction extraction."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "1",
+-   "metadata": {},
+-   "source": [
+-    "## Setup\n",
+-    "\n",
+-    "Everything up to the final optional section should run on a laptop without a GPU and without calling any LLM. Datasets genereated over the course of this internship have been randomly sampled and are stored in `samples/`, along with logged scores from testing in `results.json`. The corpus download is only needed for the human comparison sentences."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "2",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "!pip install -q bioc spacy scikit-learn pandas\n",
+-    "!python -c \"import spacy; spacy.cli.download('en_core_web_sm')\"\n",
+-    "\n",
+-    "# uncomment the following line to download the DDICorpus dataset\n",
+-    "# ![ -d ../DDICorpusBrat ] || (cd .. && curl -sL -o DDICorpus.zip \"https://github.com/isegura/DDICorpus/raw/refs/heads/master/DDICorpus-2013(BRAT).zip\" && unzip -oq DDICorpus.zip)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "3",
+-   "metadata": {},
+-   "source": [
+-    "Set up by loading the synthetic and human data."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "4",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "import math, random, re\n",
+-    "from collections import Counter, defaultdict\n",
+-    "\n",
+-    "import pandas as pd\n",
+-    "\n",
+-    "import lib\n",
+-    "from lib import load_samples, human_sentences, sentence_label, masked, flatten\n",
+-    "\n",
+-    "synth = {v: load_samples(v) for v in lib.VERSIONS}\n",
+-    "human = human_sentences(\"train\", n=400, seed=0)\n",
+-    "data = {\"human\": human, **synth}\n",
+-    "{k: len(v) for k, v in data.items()}"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "5",
+-   "metadata": {},
+-   "source": [
+-    "## Drug-drug interations and how they are structured\n",
+-    "\n",
+-    "### The task\n",
+-    "\n",
+-    "DRAFT: Drug-drug interaction extraction takes a sentence whose drug mentions are already marked and asks, for every pair of those mentions, whether the sentence states that the two interact and, if so, how. This is a label classification problem, each pair becomes a separate copy of the sentence with its two drugs tagged, and a classifier assigns one of five labels, MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking them together, INT for an interaction stated without detail, and NONE. Labels are per each possible pair of drugs in the sentence so NONE labels are dominant, with this dominance increasing with n increasing number of drugs in a sentence. Performance is reported as micro-F1 over the four positive labels.\n",
+-    "\n",
+-    "### Two ways to utilise an LLM\n",
+-    "\n",
+-    "Annotating pairs to this standard takes trained annotators working from a detailed guideline, which is the bottleneck synthetic data is meant to remove. An LLM can help this in two ways. It can write new sentences together with their labels, which removes the need for any corpus at all, or it can label sentences that already exist, which removes the annotators but still needs the text. Either the new sentences or the labelled sentences are then used as training data for the downstream model, which in this case is BiomedBERT. Most of this notebook is about generation, because that is what the internship set out to do, and the second appears at the end as a comparison.\n",
+-    "\n",
+-    "### How a generated sentence is made\n",
+-    "\n",
+-    "First, a large amount of specifications are made, each spec being a small structured description of one sentence listing which drugs must appear and which pairs among them must stand in which relation, then renders that specification as a prompt. The LLM then generates a structured response holding the new, synthetic sentence. A second, deterministic stage finds each drug in the sentence, tags every pair, and takes each pair's label from the specification. Because the specification states the relations before the sentence exists, we already know the gold annotation, and the labels are correct by construction, assuming the LLM has generated a sentence that follows the specification. This saves generation resources since the LLM doesn't have to correctly output each pair of drugs, in the sentence. It also provides a cheap filter, since sentences in which the pairs given in the specification cannot be recovered from the generated sentence are guaranteed to be malformed. \n",
+-    "\n",
+-    "```\n",
+-    "specification -> prompt -> LLM -> sentence -> pair instances -> BiomedBERT\n",
+-    "```\n",
+-    "\n",
+-    "The following is an example of one spec and sentence from the final generator."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "6",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "TAGS = re.compile(r\"\\[(E[12])\\](.*?)\\[/\\1\\]\")\n",
+-    "\n",
+-    "def pair_names(text):\n",
+-    "    found = {t: re.sub(r\"\\[/?E[12]\\]\", \"\", name) for t, name in TAGS.findall(text)}\n",
+-    "    return found.get(\"E1\"), found.get(\"E2\")\n",
+-    "\n",
+-    "rec = next(r for r in synth[\"v18\"]\n",
+-    "           if r[\"spec\"] and r[\"spec\"].get(\"positives\") and r[\"n_entities\"] >= 3)\n",
+-    "spec = rec[\"spec\"]\n",
+-    "# entity keys run A, B, C ... in the order the specification lists them\n",
+-    "surface = dict(zip(\"ABCDEFGHIJKLMNOPQRSTUVWXYZ\", spec.get(\"entities\") or []))\n",
+-    "\n",
+-    "print(\"assertions \", spec.get(\"assertions\"))\n",
+-    "print(\"modifiers  \", spec.get(\"modifiers\"))\n",
+-    "print(\"variants   \", spec.get(\"variants\"))\n",
+-    "print(\"\\ntarget labels\")\n",
+-    "for p in spec[\"positives\"]:\n",
+-    "    a, b = p[\"between\"]\n",
+-    "    print(f\"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}\")\n",
+-    "print(\"\\nwhat the model wrote\\n \", rec[\"sentence\"], \"\\n\")\n",
+-    "\n",
+-    "pd.DataFrame([{\"drug A\": x, \"drug B\": y, \"label\": p[\"label\"]}\n",
+-    "              for p in rec[\"pairs\"] for x, y in [pair_names(p[\"text\"])]])"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "7",
+-   "metadata": {},
+-   "source": [
+-    "The pairs the specification names come out with its labels and every other pair comes out NONE, which is how a single generated sentence supplies negative examples as well as positive ones. Whether the model's sentence actually says what the specification asked for is a separate question, which the project checked with a second model pass.\n",
+-    "\n",
+-    "### One record shape for every dataset\n",
+-    "\n",
+-    "DRAFT: Everything the notebook analyses, generated or real, is held as a list of sentence records of one shape. A record keeps the plain sentence, how many drugs it mentions, all of its pair instances with their labels, and, for generated sentences, the specification that produced it. Records are per sentence rather than per pair because every argument below is about sentences: how many drugs they carry, which construction built them, and how the labels among their pairs are distributed. Real sentences use the same shape with the specification left empty, so each diagnostic is written once and applied to all six datasets."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "8",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "def shape(record):\n",
+-    "    def show(v):\n",
+-    "        if isinstance(v, list):\n",
+-    "            return f\"list of {len(v)}\"\n",
+-    "        if isinstance(v, dict):\n",
+-    "            return \"specification: \" + \", \".join(sorted(v))\n",
+-    "        if isinstance(v, str) and len(v) > 60:\n",
+-    "            return v[:57] + \"...\"\n",
+-    "        return v\n",
+-    "    return {k: show(v) for k, v in record.items()}\n",
+-    "\n",
+-    "pd.DataFrame({\"generated (v18)\": shape(rec), \"real\": shape(human[0])})"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "9",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Real sentences are built with the project's own pair construction, which makes one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so mixing the two builders would silently double the counts in any comparison between real and generated data.\n",
+-    "\n",
+-    "### Where the data and the numbers come from\n",
+-    "\n",
+-    "DRAFT: Nothing in this notebook is regenerated or retrained in order to make a point. The generated sentences are samples of 400 drawn from the datasets the logged results were measured on, one per generator version, and each is joined back to the specification that produced it wherever the raw generation file survived; v13's did not. The scores are read from `results.json`, which is rebuilt from the project's run records and stores beside each figure the ids of the runs behind it. The specification builders used later are the project's own code, run live, since building a specification costs nothing."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "10",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "cols = [\"dataset_id\", \"gen_id\", \"sentences_available\", \"sentences_sampled\",\n",
+-    "        \"raw_file_found\", \"specs_joined\"]\n",
+-    "man = pd.DataFrame(lib.sample_manifest()).T\n",
+-    "display(man[[c for c in cols if c in man.columns]])\n",
+-    "\n",
+-    "v18 = lib.results()[\"trajectory\"][\"v18\"]\n",
+-    "print(f\"v18 scored {v18['f1']} (sd {v18['sd']}) over {v18['n_seeds']} seeds, \"\n",
+-    "      f\"from runs {', '.join(v18['run_ids'])}\")"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "11",
+-   "metadata": {},
+-   "source": [
+-    "### What is hidden and what is shown\n",
+-    "\n",
+-    "DRAFT: The helper file `lib.py` holds anything that would be copied unchanged into another project: loading the samples and the corpus sentences, turning records back into instances, masking drug names, the guessing game, and training. Every diagnostic is written out in the notebook itself, because in each case the few lines of code are the explanation, and hiding them behind a function would leave only a name to trust.\n",
+-    "\n",
+-    "### How the rest is arranged\n",
+-    "\n",
+-    "DRAFT: The sections follow the order in which the internship found things. Each generator removed one problem and exposed the next, and for the first two problems the notebook asks the reader to exploit the problem by hand before measuring it, first with a rule that sees only how many drugs a sentence mentions and then with a guessing game on masked sentences. After that come how the fix was found in the real corpus, the fix itself, how to extend the generator, what every version scored, and finally the comparison with labelling real text."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "12",
+-   "metadata": {},
+-   "source": [
+-    "## What each generator actually produced\n",
+-    "\n",
+-    "DRAFT: Before any model is trained, the simplest description of a dataset is how many drugs its sentences mention, how many pairs that produces, and what fraction of those pairs are positive, and it is worth looking at this table for a while before reading on because most of the story of the internship is already in it."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "13",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "def describe(records):\n",
+-    "    pairs = flatten(records)\n",
+-    "    per = [len(r[\"pairs\"]) for r in records]\n",
+-    "    per.sort()\n",
+-    "    return {\"sentences\": len(records),\n",
+-    "            \"pairs\": len(pairs),\n",
+-    "            \"pairs/sentence mean\": round(sum(per) / len(per), 2),\n",
+-    "            \"pairs/sentence median\": per[len(per) // 2],\n",
+-    "            \"positive pairs\": round(sum(p[\"label\"] != \"NONE\" for p in pairs) / len(pairs), 3),\n",
+-    "            \"positive sentences\": round(sum(sentence_label(r) == \"POS\" for r in records) / len(records), 3)}\n",
+-    "\n",
+-    "pd.DataFrame({k: describe(v) for k, v in data.items()}).T"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "14",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: The v13 row is the one to look at. Almost every sentence it wrote contains exactly one pair, and that pair is almost always positive, which is exactly what was asked of it (write a sentence in which these two drugs interact) and exactly what makes it useless, because real sentences contain several drugs and most of the pairs among them are NONE. The mean against the median for the human row is also worth a moment: a small number of sentences enumerate dozens of drugs and produce hundreds of pairs each, so the mean is dragged far above what a typical sentence looks like."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "15",
+-   "metadata": {},
+-   "source": [
+-    "## Shortcut one: count the drugs\n",
+-    "\n",
+-    "DRAFT: Before looking at the diagnostic, write a classifier yourself using nothing but the number of drugs in the sentence, with no access to its words, and see how it does on each dataset."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "16",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "def my_rule(record):\n",
+-    "    # edit this: it sees only how many drugs the sentence contains\n",
+-    "    return \"POS\" if record[\"n_entities\"] == 2 else \"NONE\"\n",
+-    "\n",
+-    "def score_rule(rule, records):\n",
+-    "    return sum(rule(r) == sentence_label(r) for r in records) / len(records)\n",
+-    "\n",
+-    "{k: round(score_rule(my_rule, v), 3) for k, v in data.items()}"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "17",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: A rule that ignores every word in the sentence does very well on v13 and badly on real text. A classifier trained on v13 finds the same rule, because it is the shortest route to a low loss on that data, and then applies it to real sentences where it no longer holds. This is the composition shortcut, and the table below is the diagnostic that exposed it. The empty cells in v13's column are not missing data but the finding itself, since the generator never once wrote a sentence mentioning more than two drugs."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "18",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "def positive_rate_by_entities(records):\n",
+-    "    buckets = defaultdict(list)\n",
+-    "    for r in records:\n",
+-    "        for p in r[\"pairs\"]:\n",
+-    "            buckets[min(r[\"n_entities\"], 6)].append(p[\"label\"] != \"NONE\")\n",
+-    "    return {k: round(sum(v) / len(v), 3) for k, v in sorted(buckets.items())}\n",
+-    "\n",
+-    "pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \\\n",
+-    "  .rename_axis(\"drugs (6 = six or more)\").fillna(\"none written\")"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "19",
+-   "metadata": {},
+-   "source": [
+-    "## Shortcut two: read the construction\n",
+-    "\n",
+-    "DRAFT: Fixing the composition shortcut by adding drugs that take no part in the relation improved precision but left recall flat, which at the time looked like a failed fix and was in fact a second shortcut becoming the binding constraint. To see it, play the game below. Each sentence has its drug names replaced with DRUG, and the task is to say whether the sentence asserts an interaction between any two of them."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "20",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "game = lib.GuessGame(synth[\"v17\"], n=10, seed=1)\n",
+-    "game.show()"
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "21",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "my_guesses = [\"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\"]   # edit\n",
+-    "game.score(my_guesses)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "22",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Now play the same game on real sentences."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "23",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "real_game = lib.GuessGame(human, n=10, seed=1)\n",
+-    "real_game.show()"
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "24",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "my_real_guesses = [\"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\", \"POS\", \"NONE\"]   # edit\n",
+-    "real_game.score(my_real_guesses)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "25",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Scored on accuracy alone, the two games come out about the same for anyone who knows the domain, and I got 9 of 10 on each. What differs is how the answers were reached. On the generated sentences every NONE was given away by the wording used to describe a drug that takes no part in the relation, phrases such as \"part of the background regimen\", \"used if the first choice is unsuitable\" and \"prescribed for an unrelated condition\", so no pharmacology was needed at all, whereas on the real sentences each answer had to come from reading the relation itself. A classifier takes the cheaper route whenever one exists, and the generated data offered one.\n",
+-    "\n",
+-    "Both of my misses were conventions rather than pharmacology. On the generated side it was v17's `incompatible` construction, which the generator always labels NONE while the one real corpus sentence using it is positive, and on the real side it looked like a guideline convention case. The measurement that makes the difference in route precise asks how much of the uncertainty about a sentence's label is removed by knowing its construction."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "26",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "def entropy(counts):\n",
+-    "    n = sum(counts.values())\n",
+-    "    return -sum(c / n * math.log2(c / n) for c in counts.values() if c)\n",
+-    "\n",
+-    "def uncertainty_coefficient(pairs):\n",
+-    "    \"\"\"U(label | x): the fraction of the label's entropy that x removes.\n",
+-    "    1.0 means x determines the label outright, 0.0 means it says nothing about it.\n",
+-    "\n",
+-    "    This is not sklearn's normalized_mutual_info_score, which divides by the mean of\n",
+-    "    both entropies and so reports about 0.4 for a 19-way construction that fully\n",
+-    "    determines a binary label. The asymmetric version asks the question that matters\n",
+-    "    here, which is whether knowing the construction tells you the label.\"\"\"\n",
+-    "    joint = Counter(pairs)\n",
+-    "    px, py = Counter(), Counter()\n",
+-    "    for (x, y), c in joint.items():\n",
+-    "        px[x] += c; py[y] += c\n",
+-    "    n = sum(joint.values())\n",
+-    "    mi = sum(c / n * math.log2((c / n) / ((px[x] / n) * (py[y] / n)))\n",
+-    "             for (x, y), c in joint.items())\n",
+-    "    return mi / entropy(py)\n",
+-    "\n",
+-    "v17_frames = [(r[\"spec\"][\"frame\"], sentence_label(r)) for r in synth[\"v17\"] if r[\"spec\"]]\n",
+-    "round(uncertainty_coefficient(v17_frames), 3)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "27",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: A value of 1.0 would be harmless on its own if the construction were invisible in the finished sentence, but it is not, and a bag-of-words model with the drug names masked out can name the construction from the text."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "28",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "from sklearn.feature_extraction.text import CountVectorizer\n",
+-    "from sklearn.linear_model import LogisticRegression\n",
+-    "from sklearn.model_selection import cross_val_score\n",
+-    "\n",
+-    "with_frame = [r for r in synth[\"v17\"] if r[\"spec\"]]\n",
+-    "X = CountVectorizer(ngram_range=(1, 2), min_df=2).fit_transform([masked(r) for r in with_frame])\n",
+-    "y = [r[\"spec\"][\"frame\"] for r in with_frame]\n",
+-    "acc = cross_val_score(LogisticRegression(max_iter=3000), X, y, cv=3).mean()\n",
+-    "print(f\"construction recovered from masked text: {acc:.3f} over {len(set(y))} classes \"\n",
+-    "      f\"(chance {1 / len(set(y)):.3f})\")"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "29",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: On this 400-sentence sample the construction is recovered about three times in four against a chance rate of one in nineteen. On the full 5,702-sentence dataset the same test reaches 0.961, the difference most likely being the amount of training data per class rather than anything about the text, since three-fold cross-validation over 400 sentences leaves about fourteen examples of each construction to learn from.\n",
+-    "\n",
+-    "So the words give away the construction and the construction gives away the label, which is a complete route from surface to answer that never passes through the question of whether these two drugs interact. The most repeated phrases in the generated text show where the words came from."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "30",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "def top_ngrams(records, n=4, k=10):\n",
+-    "    c = Counter()\n",
+-    "    for r in records:\n",
+-    "        w = re.sub(r\"[^\\w\\s]\", \" \", masked(r).lower()).split()\n",
+-    "        c.update(\" \".join(w[i:i + n]) for i in range(len(w) - n + 1))\n",
+-    "    return c.most_common(k)\n",
+-    "\n",
+-    "pd.DataFrame({\"v17\": [f\"{g}  ({c})\" for g, c in top_ngrams(synth[\"v17\"])],\n",
+-    "              \"human\": [f\"{g}  ({c})\" for g, c in top_ngrams(human)]})"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "31",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: v17 described each non-participating drug using one of seven fixed phrases, such as \"started before the others and since stopped\", and those seven phrases supplied the most repeated 4-grams in the entire generated corpus. Worse, every negative construction had been written to avoid effect vocabulary, so the classifier learned that words like caused and prolonged mean positive and that denial language means NONE, neither of which holds in real text."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "32",
+-   "metadata": {},
+-   "source": [
+-    "## Finding the fix in the real corpus\n",
+-    "\n",
+-    "DRAFT: The way out came from classifying a sample of real corpus sentences by construction, which was done once for 300 sentences and is committed in `runs/frames/`, and then asking two questions of each construction: whether it is ever the main clause of a real sentence, and whether its positive rate in the generated data matches its positive rate in the corpus."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "33",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "import json\n",
+-    "from pathlib import Path\n",
+-    "\n",
+-    "gold = [json.loads(l) for l in (lib.REPO / \"runs/frames/gold_frames_n300_seed0.jsonl\").read_text().splitlines() if l]\n",
+-    "gold = [g for g in gold if not g.get(\"error\") and g.get(\"confident\", True)]\n",
+-    "\n",
+-    "primary, present, corpus_pos = Counter(), Counter(), defaultdict(list)\n",
+-    "for g in gold:\n",
+-    "    primary[g[\"primary\"]] += 1\n",
+-    "    for f in {g[\"primary\"], *(g.get(\"also_present\") or [])}:\n",
+-    "        present[f] += 1\n",
+-    "        corpus_pos[f].append(g[\"has_pos\"])\n",
+-    "\n",
+-    "v17_pos = defaultdict(list)\n",
+-    "for r in synth[\"v17\"]:\n",
+-    "    if r[\"spec\"]:\n",
+-    "        v17_pos[r[\"spec\"][\"frame\"]].append(sentence_label(r) == \"POS\")\n",
+-    "\n",
+-    "rows = []\n",
+-    "for f in sorted(present, key=lambda f: -present[f]):\n",
+-    "    c = sum(corpus_pos[f]) / len(corpus_pos[f])\n",
+-    "    s = sum(v17_pos[f]) / len(v17_pos[f]) if v17_pos[f] else None\n",
+-    "    rows.append({\"construction\": f, \"main clause\": primary[f], \"present in\": present[f],\n",
+-    "                 \"corpus positive\": round(c, 3),\n",
+-    "                 \"v17 positive\": None if s is None else round(s, 3),\n",
+-    "                 \"gap\": None if s is None else round(abs(s - c), 3)})\n",
+-    "pd.DataFrame(rows)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "34",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Look at appositive and coordinate. Neither is the main clause of a single real sentence, yet v17 sampled them as though they were alternatives to mechanism and denial, and made appositive sentences positive every time against a corpus rate near four in ten. These are not assertions at all but ways of packaging one, and that observation is the whole of the fix."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "35",
+-   "metadata": {},
+-   "source": [
+-    "## The fix: two axes\n",
+-    "\n",
+-    "DRAFT: v18 splits the inventory in two. Assertions bind a pair of drugs and carry a label, and a sentence draws one or two of them, the second usually negative. Modifiers carry no label and are sampled independently: headings, repeated mentions, dose details, appositives. This is the real v18 code, and it runs here without any API calls, because building and rendering a spec is free."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "36",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "from ddi.vocab import build_vocab\n",
+-    "from ddi import prompt_v18 as p18\n",
+-    "\n",
+-    "vocab = build_vocab()\n",
+-    "specs = p18.make_specs(3000, vocab=vocab, seed=0)\n",
+-    "\n",
+-    "s = specs[3]\n",
+-    "print(f\"assertions {s['assertions']}   modifiers {s['modifiers']}   variants {s['variants']}\")\n",
+-    "print(f\"gold {s['positives'] or 'all NONE'}\\n\")\n",
+-    "print(p18.render(s))"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "37",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: The same measurement as before, now on v18's assertion sets and on the real corpus's constructions. The target is not zero, because real constructions do carry some information about the label, and a generator that drove this to zero would be writing denials that are as often positive as negative, which is its own artefact. The target is the corpus."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "38",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "from ddi import prompt as p17\n",
+-    "\n",
+-    "v17_specs = p17.make_specs(3000, vocab=vocab, seed=0)\n",
+-    "pd.Series({\n",
+-    "    \"v17  frame\": uncertainty_coefficient([(x[\"frame\"], bool(x[\"positives\"])) for x in v17_specs]),\n",
+-    "    \"v18  assertion set\": uncertainty_coefficient(\n",
+-    "        [(\"+\".join(sorted(x[\"assertions\"])), bool(x[\"positives\"])) for x in specs]),\n",
+-    "    \"corpus  construction\": uncertainty_coefficient([(g[\"primary\"], g[\"has_pos\"]) for g in gold]),\n",
+-    "}).round(3)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "39",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: v18 did not just come down from 1.0, it landed within about a hundredth of the corpus. In the logged runs this change took F1 from 0.391 to 0.486, and the whole of the gain was in recall, which went from 0.403 to 0.628 while precision barely moved. That is the signature of a shortcut being removed: the classifier stops relying on a cue that real text does not contain and starts predicting on sentences it previously had no handle on."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "40",
+-   "metadata": {},
+-   "source": [
+-    "## Extending the generator\n",
+-    "\n",
+-    "DRAFT: An assertion is a function that takes the entities chosen for a sentence and a random generator, and returns what the sentence must say, which pairs are positive and with what label, and which entities it concerns. The `kind` field is not free text: it has to be one of the keys below, because it selects which stylistic axes the renderer samples, and anything else raises a KeyError deep inside `make_specs`."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "41",
+-   "metadata": {
+-    "lines_to_next_cell": 1
+-   },
+-   "outputs": [],
+-   "source": [
+-    "sorted(p17.AXES_FOR_KIND)"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "42",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Here is a new assertion for protein-binding displacement, a real mechanism the inventory does not cover. It is registered, specs are built, and the registry is restored afterwards so the rest of the notebook is unaffected."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "43",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "def f_displacement(ents, rng):\n",
+-    "    a, b = rng.sample([e[\"key\"] for e in ents], 2)\n",
+-    "    return {\"kind\": \"positive\",\n",
+-    "            \"says\": [(\"acts\", f\"{{{a}}}\"), (\"acted on\", f\"{{{b}}}\"),\n",
+-    "                     (\"what changes\", \"binding to plasma proteins\"), (\"which way\", \"displaced\")],\n",
+-    "            \"positives\": [(a, b, \"MECHANISM\")],\n",
+-    "            \"focus\": [a, b]}\n",
+-    "\n",
+-    "saved = dict(p18.ASSERTIONS)\n",
+-    "try:\n",
+-    "    p18.ASSERTIONS[\"displacement\"] = {\"n\": 2, \"w\": 0.06, \"f\": f_displacement}\n",
+-    "    extended = p18.make_specs(3000, vocab=vocab, seed=0)\n",
+-    "finally:\n",
+-    "    p18.ASSERTIONS.clear(); p18.ASSERTIONS.update(saved)\n",
+-    "\n",
+-    "drawn = [x for x in extended if \"displacement\" in x[\"assertions\"]]\n",
+-    "alone = [x for x in drawn if len(x[\"assertions\"]) == 1]\n",
+-    "print(f\"drawn in {len(drawn)} of {len(extended)} specs\")\n",
+-    "print(f\"sentence positive rate when it is the only assertion: \"\n",
+-    "      f\"{sum(bool(x['positives']) for x in alone) / len(alone):.3f}\")"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "44",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: A positive assertion on its own ought to produce a positive sentence every time, and it comes out at roughly three in four instead. That is deliberate and it is inherited rather than written: v18's `unlisted` variant retargets about a quarter of positive assertions at a drug that is not in the sentence's list, which turns them NONE, so a new assertion cannot become a fresh label-pure shortcut however carelessly it is written. Everything in this section costs nothing, because it all happens before a single sentence is generated, and that is the practical lesson: check a design in spec space first, and only pay for generation once the numbers there look right.\n",
+-    "\n",
+-    "NOTE: adaptation to another task goes here. Which parts are DDI-specific (label set, guidelines conventions, vocabulary, the pair structure) and which carry over unchanged (spec, render, generate, the two-stage raw/instance split, the diagnostics above)."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "45",
+-   "metadata": {},
+-   "source": [
+-    "## What the versions scored\n",
+-    "\n",
+-    "DRAFT: Every number here is recomputed from the committed run records and each carries the ids of the runs behind it, so none of it depends on anyone's memory of what a run produced."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "46",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "R = lib.results()\n",
+-    "pd.DataFrame(R[\"trajectory\"]).T[[\"f1\", \"sd\", \"p\", \"r\", \"n_seeds\"]]"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "47",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Two caveats belong next to this table. The v13 figure is a single seed and was measured on a version of the v13 data padded with extra negatives, not on the raw generation sampled above. And the human baseline these should be read against is about 0.79, which is not comparable to the 0.85 to 0.90 reported in much of the DDI-2013 literature, because those papers usually delete trivially negative pairs before training and evaluation and this project does not."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "48",
+-   "metadata": {},
+-   "source": [
+-    "## The comparison that reframed it\n",
+-    "\n",
+-    "DRAFT: Eight weeks went into making generated text better. The comparison that should have come first keeps the real sentences and asks the LLM only for the labels, on the same sentences, with the same entity spans, so that the only thing varying between arms is where the text came from and where the labels came from."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "49",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "arms = R[\"three_arm\"]\n",
+-    "pd.DataFrame({k: arms[k] for k in [\"human\", \"llm_labels\", \"synthetic\"]}).T[[\"f1\", \"sd\", \"p\", \"r\", \"n_seeds\"]]"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "50",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: Swapping human labels for LLM labels on real text costs 0.128, and swapping real text for generated text costs a further 0.195, so the text matters more than the labels even though the generated labels are correct by construction and the LLM's own labels are noticeably wrong, over-predicting positives with precision well below human while recall is slightly above it.\n",
+-    "\n",
+-    "The exchange-rate runs complicate that in an interesting way."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "51",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "xr = R[\"exchange_rate\"]\n",
+-    "pd.DataFrame({b: {\"human\": v[\"human\"][\"f1\"], \"llm labels\": v[\"llm_labels\"][\"f1\"]}\n",
+-    "              for b, v in xr.items()}).T.rename_axis(\"real sentences\")"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "52",
+-   "metadata": {},
+-   "source": [
+-    "DRAFT: At 250 sentences the LLM-labelled arm scores higher than the human-labelled one, and above roughly 400 the order reverses and the gap widens. With five seeds the difference at 250 is about one and a half standard errors, so it is a weak signal rather than a finding, but if it holds it says that LLM labels are worth most when real annotation is scarcest, which is exactly the situation synthetic data was supposed to rescue."
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "53",
+-   "metadata": {},
+-   "source": [
+-    "## Optional: train on a sample\n",
+-    "\n",
+-    "NOTE: needs a GPU. Reproduces the shape of the composition result on 400-sentence samples, not the logged figures."
+-   ]
+-  },
+-  {
+-   "cell_type": "code",
+-   "execution_count": null,
+-   "id": "54",
+-   "metadata": {},
+-   "outputs": [],
+-   "source": [
+-    "# dev = human_sentences(\"dev\")\n",
+-    "# for v in [\"v13\", \"v14\", \"v18\"]:\n",
+-    "#     print(v, lib.train_eval(synth[v], dev, seeds=(0,)))"
+-   ]
+-  },
+-  {
+-   "cell_type": "markdown",
+-   "id": "55",
+-   "metadata": {},
+-   "source": [
+-    "## What we would do differently\n",
+-    "\n",
+-    "NOTE: head-to-head first; shortcuts arrive one at a time; measure constructions against the corpus before generating; check designs in spec space for free; watch which way filters are biased."
+-   ]
+-  }
+- ],
+- "metadata": {
+-  "jupytext": {
+-   "cell_metadata_filter": "-all",
+-   "main_language": "python",
+-   "notebook_metadata_filter": "-all"
+-  },
+-  "language_info": {
+-   "codemirror_mode": {
+-    "name": "ipython",
+-    "version": 3
+-   },
+-   "file_extension": ".py",
+-   "mimetype": "text/x-python",
+-   "name": "python",
+-   "nbconvert_exporter": "python",
+-   "pygments_lexer": "ipython3",
+-   "version": "3.12.3"
+-  }
+- },
+- "nbformat": 4,
+- "nbformat_minor": 5
+-}
+diff --git a/tutorial/ddi_tutorial.py b/tutorial/ddi_tutorial.py
+deleted file mode 100644
+index 340b991..0000000
+--- a/tutorial/ddi_tutorial.py
++++ /dev/null
+@@ -1,424 +0,0 @@
+-# %% [markdown]
+-# # Can an LLM write training data for a BERT model?
+-#
+-# ### Gwilym Hughes, Summer 2026 Internship
+-#
+-# The main reason for looking towards synthetic training data to train AI models is that annotation is the bottleneck to starting new projects. Getting an LLM to write labelled examples instead skips the bottleneck. In theory the knowledge a large LLM has in it's weights should be sufficient to generate good training data for a smaller model like BERT, ie. distillation. This notebook is the result of an 8-week internship trying this for drug-drug interaction extraction.
+-#
+-# DRAFT: This notebook assumes the earlier sentence-level relation extraction tutorial, which shows how a DDI sentence becomes a set of pair instances and how BiomedBERT is trained on them, and it does not repeat that material. What it adds is the data the internship actually produced: a sample of real output from each of five generator versions, drawn from the datasets the logged results were measured on, so that every claim below can be checked against the sentences that produced it rather than against a reconstruction written for the occasion.
+-
+-# %% [markdown]
+-# ## Setup
+-#
+-# DRAFT: Everything up to the final optional section runs on a laptop without a GPU and without calling any LLM, because the generated data is already in `samples/` and the logged scores are in `results.json`. The corpus download is only needed for the human comparison sentences.
+-
+-# %%
+-# !pip install -q bioc spacy scikit-learn pandas
+-# !python -c "import spacy; spacy.cli.download('en_core_web_sm')"
+-# ![ -d ../DDICorpusBrat ] || (cd .. && curl -sL -o DDICorpus.zip "https://github.com/isegura/DDICorpus/raw/refs/heads/master/DDICorpus-2013(BRAT).zip" && unzip -oq DDICorpus.zip)
+-
+-# %%
+-import math, random, re
+-from collections import Counter, defaultdict
+-
+-import pandas as pd
+-
+-import lib
+-from lib import load_samples, human_sentences, sentence_label, masked, flatten
+-
+-synth = {v: load_samples(v) for v in lib.VERSIONS}
+-human = human_sentences("train", n=400, seed=0)
+-data = {"human": human, **synth}
+-{k: len(v) for k, v in data.items()}
+-
+-# %% [markdown]
+-# ## The problem, and how this notebook is built
+-#
+-# DRAFT: This section sets out the task, the idea being tested, and how the code in the rest of the notebook is organised, so that each later cell can be read as one step in an argument rather than as a standalone piece of code.
+-#
+-# ### The task
+-#
+-# DRAFT: Drug-drug interaction extraction takes a sentence whose drug mentions are already marked and asks, for every pair of those mentions, whether the sentence states that the two interact and, if so, how. The earlier tutorial treats this as classification: each pair becomes a separate copy of the sentence with its two drugs tagged, and a classifier assigns one of five labels, MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking them together, INT for an interaction stated without detail, and NONE. The label belongs to the pair rather than to the sentence, so a sentence naming four drugs yields six instances that can each carry a different label, and about five pairs in six in the corpus are NONE. Performance is reported as micro-F1 over the four positive labels, since counting NONE would reward a model that never predicts anything else.
+-#
+-# ### Two ways to spend an LLM
+-#
+-# DRAFT: Annotating pairs to this standard takes trained annotators working from a detailed guideline, which is the bottleneck synthetic data is meant to remove. An LLM can help in two ways. It can write new sentences together with their labels, which removes the need for any corpus at all, or it can label sentences that already exist, which removes the annotators but still needs the text. Most of this notebook is about the first, because that is what the internship set out to do, and the second appears at the end as the comparison that changed how the first should be judged.
+-#
+-# ### How a generated sentence is made
+-#
+-# DRAFT: The generator never asks the model to label anything. It first builds a specification, a small structured description of one sentence listing which drugs must appear and which pairs among them must stand in which relation, then renders that specification as a prompt and stores the model's sentence beside the specification that produced it. A second, deterministic stage finds each drug in the sentence, tags every pair, and takes each pair's label from the specification. Because the specification states the relations before the sentence exists, it is the gold annotation, and the labels are correct by construction. Keeping the two stages apart means the expensive, non-deterministic step never has to be repeated when the way instances are extracted changes.
+-#
+-# ```
+-# specification -> prompt -> LLM -> sentence -> pair instances -> BiomedBERT
+-# ```
+-#
+-# Here is one sentence from the final generator, v18, as it was actually produced, with its specification and the pair labels taken from it.
+-
+-# %%
+-TAGS = re.compile(r"\[(E[12])\](.*?)\[/\1\]")
+-
+-def pair_names(text):
+-    found = {t: re.sub(r"\[/?E[12]\]", "", name) for t, name in TAGS.findall(text)}
+-    return found.get("E1"), found.get("E2")
+-
+-rec = next(r for r in synth["v18"]
+-           if r["spec"] and r["spec"].get("positives") and r["n_entities"] >= 3)
+-spec = rec["spec"]
+-# entity keys run A, B, C ... in the order the specification lists them
+-surface = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", spec.get("entities") or []))
+-
+-print("assertions ", spec.get("assertions"))
+-print("modifiers  ", spec.get("modifiers"))
+-print("variants   ", spec.get("variants"))
+-print("\ngold, as the specification states it")
+-for p in spec["positives"]:
+-    a, b = p["between"]
+-    print(f"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}")
+-print("\nwhat the model wrote\n ", rec["sentence"], "\n")
+-
+-pd.DataFrame([{"drug A": x, "drug B": y, "label": p["label"]}
+-              for p in rec["pairs"] for x, y in [pair_names(p["text"])]])
+-
+-# %% [markdown]
+-# DRAFT: The pairs the specification names come out with its labels and every other pair comes out NONE, which is how a single generated sentence supplies negative examples as well as positive ones. Whether the model's sentence actually says what the specification asked for is a separate question, which the project checked with a second model pass.
+-#
+-# ### One record shape for every dataset
+-#
+-# DRAFT: Everything the notebook analyses, generated or real, is held as a list of sentence records of one shape. A record keeps the plain sentence, how many drugs it mentions, all of its pair instances with their labels, and, for generated sentences, the specification that produced it. Records are per sentence rather than per pair because every argument below is about sentences: how many drugs they carry, which construction built them, and how the labels among their pairs are distributed. Real sentences use the same shape with the specification left empty, so each diagnostic is written once and applied to all six datasets.
+-
+-# %%
+-def shape(record):
+-    def show(v):
+-        if isinstance(v, list):
+-            return f"list of {len(v)}"
+-        if isinstance(v, dict):
+-            return "specification: " + ", ".join(sorted(v))
+-        if isinstance(v, str) and len(v) > 60:
+-            return v[:57] + "..."
+-        return v
+-    return {k: show(v) for k, v in record.items()}
+-
+-pd.DataFrame({"generated (v18)": shape(rec), "real": shape(human[0])})
+-
+-# %% [markdown]
+-# DRAFT: Real sentences are built with the project's own pair construction, which makes one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so mixing the two builders would silently double the counts in any comparison between real and generated data.
+-#
+-# ### Where the data and the numbers come from
+-#
+-# DRAFT: Nothing in this notebook is regenerated or retrained in order to make a point. The generated sentences are samples of 400 drawn from the datasets the logged results were measured on, one per generator version, and each is joined back to the specification that produced it wherever the raw generation file survived; v13's did not. The scores are read from `results.json`, which is rebuilt from the project's run records and stores beside each figure the ids of the runs behind it. The specification builders used later are the project's own code, run live, since building a specification costs nothing.
+-
+-# %%
+-cols = ["dataset_id", "gen_id", "sentences_available", "sentences_sampled",
+-        "raw_file_found", "specs_joined"]
+-man = pd.DataFrame(lib.sample_manifest()).T
+-display(man[[c for c in cols if c in man.columns]])
+-
+-v18 = lib.results()["trajectory"]["v18"]
+-print(f"v18 scored {v18['f1']} (sd {v18['sd']}) over {v18['n_seeds']} seeds, "
+-      f"from runs {', '.join(v18['run_ids'])}")
+-
+-# %% [markdown]
+-# ### What is hidden and what is shown
+-#
+-# DRAFT: The helper file `lib.py` holds anything that would be copied unchanged into another project: loading the samples and the corpus sentences, turning records back into instances, masking drug names, the guessing game, and training. Every diagnostic is written out in the notebook itself, because in each case the few lines of code are the explanation, and hiding them behind a function would leave only a name to trust.
+-#
+-# ### How the rest is arranged
+-#
+-# DRAFT: The sections follow the order in which the internship found things. Each generator removed one problem and exposed the next, and for the first two problems the notebook asks the reader to exploit the problem by hand before measuring it, first with a rule that sees only how many drugs a sentence mentions and then with a guessing game on masked sentences. After that come how the fix was found in the real corpus, the fix itself, how to extend the generator, what every version scored, and finally the comparison with labelling real text.
+-
+-# %% [markdown]
+-# ## What each generator actually produced
+-#
+-# DRAFT: Before any model is trained, the simplest description of a dataset is how many drugs its sentences mention, how many pairs that produces, and what fraction of those pairs are positive, and it is worth looking at this table for a while before reading on because most of the story of the internship is already in it.
+-
+-# %%
+-def describe(records):
+-    pairs = flatten(records)
+-    per = [len(r["pairs"]) for r in records]
+-    per.sort()
+-    return {"sentences": len(records),
+-            "pairs": len(pairs),
+-            "pairs/sentence mean": round(sum(per) / len(per), 2),
+-            "pairs/sentence median": per[len(per) // 2],
+-            "positive pairs": round(sum(p["label"] != "NONE" for p in pairs) / len(pairs), 3),
+-            "positive sentences": round(sum(sentence_label(r) == "POS" for r in records) / len(records), 3)}
+-
+-pd.DataFrame({k: describe(v) for k, v in data.items()}).T
+-
+-# %% [markdown]
+-# DRAFT: The v13 row is the one to look at. Almost every sentence it wrote contains exactly one pair, and that pair is almost always positive, which is exactly what was asked of it (write a sentence in which these two drugs interact) and exactly what makes it useless, because real sentences contain several drugs and most of the pairs among them are NONE. The mean against the median for the human row is also worth a moment: a small number of sentences enumerate dozens of drugs and produce hundreds of pairs each, so the mean is dragged far above what a typical sentence looks like.
+-
+-# %% [markdown]
+-# ## Shortcut one: count the drugs
+-#
+-# DRAFT: Before looking at the diagnostic, write a classifier yourself using nothing but the number of drugs in the sentence, with no access to its words, and see how it does on each dataset.
+-
+-# %%
+-def my_rule(record):
+-    # edit this: it sees only how many drugs the sentence contains
+-    return "POS" if record["n_entities"] == 2 else "NONE"
+-
+-def score_rule(rule, records):
+-    return sum(rule(r) == sentence_label(r) for r in records) / len(records)
+-
+-{k: round(score_rule(my_rule, v), 3) for k, v in data.items()}
+-
+-# %% [markdown]
+-# DRAFT: A rule that ignores every word in the sentence does very well on v13 and badly on real text. A classifier trained on v13 finds the same rule, because it is the shortest route to a low loss on that data, and then applies it to real sentences where it no longer holds. This is the composition shortcut, and the table below is the diagnostic that exposed it. The empty cells in v13's column are not missing data but the finding itself, since the generator never once wrote a sentence mentioning more than two drugs.
+-
+-# %%
+-def positive_rate_by_entities(records):
+-    buckets = defaultdict(list)
+-    for r in records:
+-        for p in r["pairs"]:
+-            buckets[min(r["n_entities"], 6)].append(p["label"] != "NONE")
+-    return {k: round(sum(v) / len(v), 3) for k, v in sorted(buckets.items())}
+-
+-pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \
+-  .rename_axis("drugs (6 = six or more)").fillna("none written")
+-
+-# %% [markdown]
+-# ## Shortcut two: read the construction
+-#
+-# DRAFT: Fixing the composition shortcut by adding drugs that take no part in the relation improved precision but left recall flat, which at the time looked like a failed fix and was in fact a second shortcut becoming the binding constraint. To see it, play the game below. Each sentence has its drug names replaced with DRUG, and the task is to say whether the sentence asserts an interaction between any two of them.
+-
+-# %%
+-game = lib.GuessGame(synth["v17"], n=10, seed=1)
+-game.show()
+-
+-# %%
+-my_guesses = ["POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE"]   # edit
+-game.score(my_guesses)
+-
+-# %% [markdown]
+-# DRAFT: Now play the same game on real sentences.
+-
+-# %%
+-real_game = lib.GuessGame(human, n=10, seed=1)
+-real_game.show()
+-
+-# %%
+-my_real_guesses = ["POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE"]   # edit
+-real_game.score(my_real_guesses)
+-
+-# %% [markdown]
+-# DRAFT: Scored on accuracy alone, the two games come out about the same for anyone who knows the domain, and I got 9 of 10 on each. What differs is how the answers were reached. On the generated sentences every NONE was given away by the wording used to describe a drug that takes no part in the relation, phrases such as "part of the background regimen", "used if the first choice is unsuitable" and "prescribed for an unrelated condition", so no pharmacology was needed at all, whereas on the real sentences each answer had to come from reading the relation itself. A classifier takes the cheaper route whenever one exists, and the generated data offered one.
+-#
+-# Both of my misses were conventions rather than pharmacology. On the generated side it was v17's `incompatible` construction, which the generator always labels NONE while the one real corpus sentence using it is positive, and on the real side it looked like a guideline convention case. The measurement that makes the difference in route precise asks how much of the uncertainty about a sentence's label is removed by knowing its construction.
+-
+-# %%
+-def entropy(counts):
+-    n = sum(counts.values())
+-    return -sum(c / n * math.log2(c / n) for c in counts.values() if c)
+-
+-def uncertainty_coefficient(pairs):
+-    """U(label | x): the fraction of the label's entropy that x removes.
+-    1.0 means x determines the label outright, 0.0 means it says nothing about it.
+-
+-    This is not sklearn's normalized_mutual_info_score, which divides by the mean of
+-    both entropies and so reports about 0.4 for a 19-way construction that fully
+-    determines a binary label. The asymmetric version asks the question that matters
+-    here, which is whether knowing the construction tells you the label."""
+-    joint = Counter(pairs)
+-    px, py = Counter(), Counter()
+-    for (x, y), c in joint.items():
+-        px[x] += c; py[y] += c
+-    n = sum(joint.values())
+-    mi = sum(c / n * math.log2((c / n) / ((px[x] / n) * (py[y] / n)))
+-             for (x, y), c in joint.items())
+-    return mi / entropy(py)
+-
+-v17_frames = [(r["spec"]["frame"], sentence_label(r)) for r in synth["v17"] if r["spec"]]
+-round(uncertainty_coefficient(v17_frames), 3)
+-
+-# %% [markdown]
+-# DRAFT: A value of 1.0 would be harmless on its own if the construction were invisible in the finished sentence, but it is not, and a bag-of-words model with the drug names masked out can name the construction from the text.
+-
+-# %%
+-from sklearn.feature_extraction.text import CountVectorizer
+-from sklearn.linear_model import LogisticRegression
+-from sklearn.model_selection import cross_val_score
+-
+-with_frame = [r for r in synth["v17"] if r["spec"]]
+-X = CountVectorizer(ngram_range=(1, 2), min_df=2).fit_transform([masked(r) for r in with_frame])
+-y = [r["spec"]["frame"] for r in with_frame]
+-acc = cross_val_score(LogisticRegression(max_iter=3000), X, y, cv=3).mean()
+-print(f"construction recovered from masked text: {acc:.3f} over {len(set(y))} classes "
+-      f"(chance {1 / len(set(y)):.3f})")
+-
+-# %% [markdown]
+-# DRAFT: On this 400-sentence sample the construction is recovered about three times in four against a chance rate of one in nineteen. On the full 5,702-sentence dataset the same test reaches 0.961, the difference most likely being the amount of training data per class rather than anything about the text, since three-fold cross-validation over 400 sentences leaves about fourteen examples of each construction to learn from.
+-#
+-# So the words give away the construction and the construction gives away the label, which is a complete route from surface to answer that never passes through the question of whether these two drugs interact. The most repeated phrases in the generated text show where the words came from.
+-
+-# %%
+-def top_ngrams(records, n=4, k=10):
+-    c = Counter()
+-    for r in records:
+-        w = re.sub(r"[^\w\s]", " ", masked(r).lower()).split()
+-        c.update(" ".join(w[i:i + n]) for i in range(len(w) - n + 1))
+-    return c.most_common(k)
+-
+-pd.DataFrame({"v17": [f"{g}  ({c})" for g, c in top_ngrams(synth["v17"])],
+-              "human": [f"{g}  ({c})" for g, c in top_ngrams(human)]})
+-
+-# %% [markdown]
+-# DRAFT: v17 described each non-participating drug using one of seven fixed phrases, such as "started before the others and since stopped", and those seven phrases supplied the most repeated 4-grams in the entire generated corpus. Worse, every negative construction had been written to avoid effect vocabulary, so the classifier learned that words like caused and prolonged mean positive and that denial language means NONE, neither of which holds in real text.
+-
+-# %% [markdown]
+-# ## Finding the fix in the real corpus
+-#
+-# DRAFT: The way out came from classifying a sample of real corpus sentences by construction, which was done once for 300 sentences and is committed in `runs/frames/`, and then asking two questions of each construction: whether it is ever the main clause of a real sentence, and whether its positive rate in the generated data matches its positive rate in the corpus.
+-
+-# %%
+-import json
+-from pathlib import Path
+-
+-gold = [json.loads(l) for l in (lib.REPO / "runs/frames/gold_frames_n300_seed0.jsonl").read_text().splitlines() if l]
+-gold = [g for g in gold if not g.get("error") and g.get("confident", True)]
+-
+-primary, present, corpus_pos = Counter(), Counter(), defaultdict(list)
+-for g in gold:
+-    primary[g["primary"]] += 1
+-    for f in {g["primary"], *(g.get("also_present") or [])}:
+-        present[f] += 1
+-        corpus_pos[f].append(g["has_pos"])
+-
+-v17_pos = defaultdict(list)
+-for r in synth["v17"]:
+-    if r["spec"]:
+-        v17_pos[r["spec"]["frame"]].append(sentence_label(r) == "POS")
+-
+-rows = []
+-for f in sorted(present, key=lambda f: -present[f]):
+-    c = sum(corpus_pos[f]) / len(corpus_pos[f])
+-    s = sum(v17_pos[f]) / len(v17_pos[f]) if v17_pos[f] else None
+-    rows.append({"construction": f, "main clause": primary[f], "present in": present[f],
+-                 "corpus positive": round(c, 3),
+-                 "v17 positive": None if s is None else round(s, 3),
+-                 "gap": None if s is None else round(abs(s - c), 3)})
+-pd.DataFrame(rows)
+-
+-# %% [markdown]
+-# DRAFT: Look at appositive and coordinate. Neither is the main clause of a single real sentence, yet v17 sampled them as though they were alternatives to mechanism and denial, and made appositive sentences positive every time against a corpus rate near four in ten. These are not assertions at all but ways of packaging one, and that observation is the whole of the fix.
+-
+-# %% [markdown]
+-# ## The fix: two axes
+-#
+-# DRAFT: v18 splits the inventory in two. Assertions bind a pair of drugs and carry a label, and a sentence draws one or two of them, the second usually negative. Modifiers carry no label and are sampled independently: headings, repeated mentions, dose details, appositives. This is the real v18 code, and it runs here without any API calls, because building and rendering a spec is free.
+-
+-# %%
+-from ddi.vocab import build_vocab
+-from ddi import prompt_v18 as p18
+-
+-vocab = build_vocab()
+-specs = p18.make_specs(3000, vocab=vocab, seed=0)
+-
+-s = specs[3]
+-print(f"assertions {s['assertions']}   modifiers {s['modifiers']}   variants {s['variants']}")
+-print(f"gold {s['positives'] or 'all NONE'}\n")
+-print(p18.render(s))
+-
+-# %% [markdown]
+-# DRAFT: The same measurement as before, now on v18's assertion sets and on the real corpus's constructions. The target is not zero, because real constructions do carry some information about the label, and a generator that drove this to zero would be writing denials that are as often positive as negative, which is its own artefact. The target is the corpus.
+-
+-# %%
+-from ddi import prompt as p17
+-
+-v17_specs = p17.make_specs(3000, vocab=vocab, seed=0)
+-pd.Series({
+-    "v17  frame": uncertainty_coefficient([(x["frame"], bool(x["positives"])) for x in v17_specs]),
+-    "v18  assertion set": uncertainty_coefficient(
+-        [("+".join(sorted(x["assertions"])), bool(x["positives"])) for x in specs]),
+-    "corpus  construction": uncertainty_coefficient([(g["primary"], g["has_pos"]) for g in gold]),
+-}).round(3)
+-
+-# %% [markdown]
+-# DRAFT: v18 did not just come down from 1.0, it landed within about a hundredth of the corpus. In the logged runs this change took F1 from 0.391 to 0.486, and the whole of the gain was in recall, which went from 0.403 to 0.628 while precision barely moved. That is the signature of a shortcut being removed: the classifier stops relying on a cue that real text does not contain and starts predicting on sentences it previously had no handle on.
+-
+-# %% [markdown]
+-# ## Extending the generator
+-#
+-# DRAFT: An assertion is a function that takes the entities chosen for a sentence and a random generator, and returns what the sentence must say, which pairs are positive and with what label, and which entities it concerns. The `kind` field is not free text: it has to be one of the keys below, because it selects which stylistic axes the renderer samples, and anything else raises a KeyError deep inside `make_specs`.
+-
+-# %%
+-sorted(p17.AXES_FOR_KIND)
+-
+-# %% [markdown]
+-# DRAFT: Here is a new assertion for protein-binding displacement, a real mechanism the inventory does not cover. It is registered, specs are built, and the registry is restored afterwards so the rest of the notebook is unaffected.
+-
+-# %%
+-def f_displacement(ents, rng):
+-    a, b = rng.sample([e["key"] for e in ents], 2)
+-    return {"kind": "positive",
+-            "says": [("acts", f"{{{a}}}"), ("acted on", f"{{{b}}}"),
+-                     ("what changes", "binding to plasma proteins"), ("which way", "displaced")],
+-            "positives": [(a, b, "MECHANISM")],
+-            "focus": [a, b]}
+-
+-saved = dict(p18.ASSERTIONS)
+-try:
+-    p18.ASSERTIONS["displacement"] = {"n": 2, "w": 0.06, "f": f_displacement}
+-    extended = p18.make_specs(3000, vocab=vocab, seed=0)
+-finally:
+-    p18.ASSERTIONS.clear(); p18.ASSERTIONS.update(saved)
+-
+-drawn = [x for x in extended if "displacement" in x["assertions"]]
+-alone = [x for x in drawn if len(x["assertions"]) == 1]
+-print(f"drawn in {len(drawn)} of {len(extended)} specs")
+-print(f"sentence positive rate when it is the only assertion: "
+-      f"{sum(bool(x['positives']) for x in alone) / len(alone):.3f}")
+-
+-# %% [markdown]
+-# DRAFT: A positive assertion on its own ought to produce a positive sentence every time, and it comes out at roughly three in four instead. That is deliberate and it is inherited rather than written: v18's `unlisted` variant retargets about a quarter of positive assertions at a drug that is not in the sentence's list, which turns them NONE, so a new assertion cannot become a fresh label-pure shortcut however carelessly it is written. Everything in this section costs nothing, because it all happens before a single sentence is generated, and that is the practical lesson: check a design in spec space first, and only pay for generation once the numbers there look right.
+-#
+-# NOTE: adaptation to another task goes here. Which parts are DDI-specific (label set, guidelines conventions, vocabulary, the pair structure) and which carry over unchanged (spec, render, generate, the two-stage raw/instance split, the diagnostics above).
+-
+-# %% [markdown]
+-# ## What the versions scored
+-#
+-# DRAFT: Every number here is recomputed from the committed run records and each carries the ids of the runs behind it, so none of it depends on anyone's memory of what a run produced.
+-
+-# %%
+-R = lib.results()
+-pd.DataFrame(R["trajectory"]).T[["f1", "sd", "p", "r", "n_seeds"]]
+-
+-# %% [markdown]
+-# DRAFT: Two caveats belong next to this table. The v13 figure is a single seed and was measured on a version of the v13 data padded with extra negatives, not on the raw generation sampled above. And the human baseline these should be read against is about 0.79, which is not comparable to the 0.85 to 0.90 reported in much of the DDI-2013 literature, because those papers usually delete trivially negative pairs before training and evaluation and this project does not.
+-
+-# %% [markdown]
+-# ## The comparison that reframed it
+-#
+-# DRAFT: Eight weeks went into making generated text better. The comparison that should have come first keeps the real sentences and asks the LLM only for the labels, on the same sentences, with the same entity spans, so that the only thing varying between arms is where the text came from and where the labels came from.
+-
+-# %%
+-arms = R["three_arm"]
+-pd.DataFrame({k: arms[k] for k in ["human", "llm_labels", "synthetic"]}).T[["f1", "sd", "p", "r", "n_seeds"]]
+-
+-# %% [markdown]
+-# DRAFT: Swapping human labels for LLM labels on real text costs 0.128, and swapping real text for generated text costs a further 0.195, so the text matters more than the labels even though the generated labels are correct by construction and the LLM's own labels are noticeably wrong, over-predicting positives with precision well below human while recall is slightly above it.
+-#
+-# The exchange-rate runs complicate that in an interesting way.
+-
+-# %%
+-xr = R["exchange_rate"]
+-pd.DataFrame({b: {"human": v["human"]["f1"], "llm labels": v["llm_labels"]["f1"]}
+-              for b, v in xr.items()}).T.rename_axis("real sentences")
+-
+-# %% [markdown]
+-# DRAFT: At 250 sentences the LLM-labelled arm scores higher than the human-labelled one, and above roughly 400 the order reverses and the gap widens. With five seeds the difference at 250 is about one and a half standard errors, so it is a weak signal rather than a finding, but if it holds it says that LLM labels are worth most when real annotation is scarcest, which is exactly the situation synthetic data was supposed to rescue.
+-
+-# %% [markdown]
+-# ## Optional: train on a sample
+-#
+-# NOTE: needs a GPU. Reproduces the shape of the composition result on 400-sentence samples, not the logged figures.
+-
+-# %%
+-# dev = human_sentences("dev")
+-# for v in ["v13", "v14", "v18"]:
+-#     print(v, lib.train_eval(synth[v], dev, seeds=(0,)))
+-
+-# %% [markdown]
+-# ## What we would do differently
+-#
+-# NOTE: head-to-head first; shortcuts arrive one at a time; measure constructions against the corpus before generating; check designs in spec space for free; watch which way filters are biased.
