@@ -76,6 +76,9 @@ def main():
             b: {"human": pick(lambda r, b=b: D(r) == f"xr-human-{b}"),
                 "llm_labels": pick(lambda r, b=b: D(r) == f"xr-llm-labels-{b}")}
             for b in [100, 250, 500, 1000, 2248]},
+        "pruning_v18_val": {
+            n: pick(lambda r, n=n: D(r) == f"v18-{n}" and N(r) == "v18 pruning arms, val")
+            for n in ["judged", "judged-pruned", "judged-randprune"]},
         "human_baselines": {
             "70/15/15 winning config": pick(lambda r: D(r) == "human" and "winning" in N(r)),
             "markers aligned": pick(lambda r: D(r) == "human"
@@ -83,6 +86,43 @@ def main():
             "8 monster sentences removed": pick(lambda r: D(r) == "human-filtered"),
         },
     }
+    grid_path = REPO / "reports" / "grid.jsonl"
+    if grid_path.exists():
+        # Read from grid.jsonl, not runs/: the first pass of the human-only arms at 100 to
+        # 500 sentences trained for a fixed three epochs, collapsed, and was rerun under a
+        # 500-step floor. Both passes are in runs/ under the same names; grid.jsonl holds
+        # only the rerun.
+        cells = {}
+        for line in grid_path.read_text().splitlines():
+            if not line:
+                continue
+            r = json.loads(line)
+            add = r["addition"] + ("-bal" if r["balanced"] else "")
+            cells.setdefault(str(r["budget"]), {}).setdefault(add, []).append(r)
+        res["grid"] = {b: {a: {"f1": round(st.mean(x["f1"] for x in rs), 3),
+                              "sd": round(st.stdev([x["f1"] for x in rs]), 3) if len(rs) > 1 else None,
+                              "p": round(st.mean(x["p"] for x in rs), 3),
+                              "r": round(st.mean(x["r"] for x in rs), 3),
+                              "n_seeds": len(rs), "instances": rs[0]["n"]}
+                          for a, rs in adds.items()}
+                       for b, adds in cells.items()}
+        res["grid_source"] = "reports/grid.jsonl, validation set"
+    test_path = REPO / "reports" / "test.jsonl"
+    if test_path.exists():
+        # The single evaluation on the official test set, for the arms validation chose.
+        arms = {}
+        for line in test_path.read_text().splitlines():
+            if line:
+                r = json.loads(line)
+                arms.setdefault(r["arm"], []).append(r)
+        res["test"] = {a: {"f1": round(st.mean(x["f1"] for x in rs), 3),
+                           "sd": round(st.stdev([x["f1"] for x in rs]), 3) if len(rs) > 1 else None,
+                           "p": round(st.mean(x["p"] for x in rs), 3),
+                           "r": round(st.mean(x["r"] for x in rs), 3),
+                           "n_seeds": len(rs), "human_sentences": rs[0]["human_sentences"],
+                           "stage": rs[0]["stage"]}
+                       for a, rs in arms.items()}
+        res["test_source"] = "reports/test.jsonl; selection frozen in reports/test_selection.json"
     OUT.write_text(json.dumps(res, indent=1))
     print(f"wrote {OUT} from {len(runs)} run records")
 

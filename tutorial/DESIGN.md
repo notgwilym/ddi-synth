@@ -26,7 +26,7 @@ ddi-synth/
   runs/
     <run_id>.json          one record per training run                          committed
     diffs/<run_id>.patch   the working-tree diff at the moment of that run      committed
-    frames/                300 real corpus sentences hand-classified by construction   committed
+    frames/                300 real corpus sentences classified by construction by gpt-oss-120b   committed
     archive/               superseded runs, kept rather than deleted
   DDICorpusBrat/           the DDI-2013 corpus in brat format                   gitignored
   _public/                 the experiment-ledger tools (collect_runs, render_log)
@@ -34,7 +34,7 @@ ddi-synth/
   tutorial/                everything described in part 2
 ```
 
-The division between committed and gitignored is the single most important thing to understand about running anything. The code, the vocabulary, the manifests, the run records, the diffs and the hand-classified corpus sentences are all in the repository, so a fresh clone can build specifications, compute every spec-level diagnostic and read every logged result. The generated datasets and the corpus are not, so a fresh clone cannot load a dataset by id or retrain anything until those are supplied.
+The division between committed and gitignored is the single most important thing to understand about running anything. The code, the vocabulary, the manifests, the run records, the diffs and the LLM-classified corpus sentences are all in the repository, so a fresh clone can build specifications, compute every spec-level diagnostic and read every logged result. The generated datasets and the corpus are not, so a fresh clone cannot load a dataset by id or retrain anything until those are supplied.
 
 ## Where the data lives
 
@@ -131,7 +131,7 @@ flowchart TB
     MK --> NB
 ```
 
-Five inputs, of which only the samples require the pod. The run records, the hand-classified sentences and the vocabulary are committed, the corpus is a public download, and the spec builders are the repository's own code.
+Five inputs, of which only the samples require the pod. The run records, the LLM-classified sentences and the vocabulary are committed, the corpus is a public download, and the spec builders are the repository's own code.
 
 ## The sentence record
 
@@ -189,39 +189,31 @@ The rule for what lives here is that anything a reader would copy unchanged into
 | the corpus purity table | |
 | `make_specs`, `render`, the new assertion | |
 
-## The notebook, cell by cell
+## The notebook, section by section
 
-The narrative follows the internship in order: what the generators produced, the first shortcut and how it was seen, the second shortcut and how it was seen, how the fix was found in the real corpus, the fix, how to extend it, what everything scored, and the comparison that reframed all of it. The recurring device is that the reader performs each shortcut before the notebook measures it, so the measurement lands as confirmation of something they have just experienced rather than as a number to take on trust.
+The notebook shares its structure with the write-up (`final/writeup.md`); `final/style_guide.md` sets out the division between them. The write-up states each result with its number, set and uncertainty. The notebook shows the objects behind the results and covers two concepts in full, each built from one sentence upwards.
 
-**Setup.** Your title and opening, then a DRAFT paragraph placing the notebook after the earlier sentence-level tutorial. The install cell installs the packages, downloads the spaCy model through `spacy.cli.download` rather than the command-line tool that crashed on your Mac, and fetches the corpus with `curl` rather than `wget` into the repository root, skipping the download if the corpus is already there, so on the pod it does nothing. The last setup cell loads the five samples and 400 real training sentences into one dictionary, `data`, which every later cell iterates over.
+**Setup.** Installs, loads the five generator samples, 400 real training sentences and `results.json`, and defines `pair_names`, which reads the two tagged drugs out of an instance.
 
-**The problem, and how this notebook is built.** Placed straight after setup and before any analysis, so that every later cell can be read as a step in an argument. It sets out the task, the two ways to spend an LLM, and the specification-to-instance pipeline. It then shows one real v18 sentence with its specification, mapping each positive to drug names through the entity keys, which run A, B, C in the order the specification lists them, and puts the resulting pair labels beside it, so the reader can see that the specification is the gold annotation. It then shows the record shape for a generated and a real sentence side by side, the sample manifest and one figure from `results.json` with its run ids, and explains what `lib.py` hides and how the remaining sections are arranged.
+**1. The task.** One real sentence and its pairs; the record shape, generated against real; the sample manifest.
 
-**What each generator produced.** `describe` computes sentences, pairs, mean and median pairs per sentence, and the positive rate at pair and sentence level for every dataset. The reader should notice v13 before anything else: close to one pair per sentence and almost all of them positive. The mean against median for real text shows how enumeration sentences inflate the average.
+**2. Writing labelled sentences.** One v18 sentence with its specification and the pair labels taken from it. 2.1 is the table of what each generator produced; 2.2 is the pair-count shortcut, with the drug-count rule and the positive rate by number of drugs.
 
-**Shortcut one.** `my_rule` is an editable function that sees only `n_entities`, and `score_rule` scores it against the true sentence label on every dataset. The default rule, positive when there are exactly two drugs, scores perfectly on v13 and poorly on real text. `positive_rate_by_entities` then shows the diagnostic that exposed this during the project, the positive rate broken down by how many drugs a sentence mentions, with six or more pooled.
+**2.3, in full: a label that can be read off the construction.** The section starts from one v17 sentence, chosen as the shortest sentence from the frame that most often produces positives, and shows its specification, its text and its pair labels. It then counts every sample sentence built from the same frame, and crosstabs all frames against sentence label, where every row is pure. It computes $H(Y)$, $H(Y \mid F)$ and the uncertainty coefficient by hand from those counts before defining the reusable function. It then masks the sentence, trains a bag-of-words model to name the frame, and lists which of the frame's strongest features the sentence contains. The guessing games, the repeated 4-grams and the corpus construction table follow.
 
-**Shortcut two, the games.** Ten masked v17 sentences, balanced between positive and NONE, the reader guesses, and the score prints each construction beside its answer. Then the same on ten real sentences. The DRAFT paragraph after both explains why the first was easier. The default guesses are placeholders that need replacing.
+**2.4 The fix and 2.5 extending the generator.** As before: v18 specifications built live, the three coefficients side by side, the trajectory table, and the displacement assertion.
 
-**Shortcut two, the measurement.** `entropy` and `uncertainty_coefficient` are written out in full with a docstring explaining why this is not sklearn's normalised mutual information, and the cell computes it for v17's frames against sentence labels. It should print 1.0.
+**3. Labelling real sentences.** Loads `samples/labelled.jsonl` and picks the shortest sentence containing a model positive that is NONE in gold and was rejected by the verifier. It shows that sentence's gold and model labels, the model's labels scored against gold with the task metric, and the test label cost.
 
-**Shortcut two, how the construction is visible.** A bag-of-words logistic regression over masked sentences, three-fold cross-validated, recovers the frame from the text, and the cell prints accuracy against chance. `top_ngrams` then puts the ten most repeated masked 4-grams in v17 beside those in real text, which shows v17's construction phrases against real text's drug enumerations.
+**4, in full: checking the model's labels.** The exact question the verifier was sent for that sentence, rebuilt with the project's own `build_batches` and `render` over the positive rows only, as 2c ran. Then the verdicts and the labels after demotion, and across the sample, how often rejected, accepted and unasked positives are NONE in gold. Then one rejected pair that was positive in gold, the label-level scores before and after checking, and the test scores. Two NOTE cells hold the result sentences, to be written once the real sample exists.
 
-**Finding the fix.** The 300 hand-classified corpus sentences are loaded from `runs/frames/`, and for each construction the cell counts how often it is the main clause, how often it is present at all, its positive rate in the corpus and its positive rate in the v17 sample, and the gap. The DRAFT paragraph points at appositive and coordinate, which are never a main clause and which v17 treated as label-carrying constructions.
+**5. Spending annotation.** The validation grid and the test table, with each arm's share of full human supervision.
 
-**The fix.** The real `build_vocab`, `make_specs` and `render` from `prompt_v18` build 3,000 specs and print one in full with its assertions, modifiers, variants and gold. A following cell builds 3,000 v17 specs as well and computes the uncertainty coefficient for v17 frames, v18 assertion sets and corpus constructions side by side. These are computed live and do not depend on the samples: 1.000, 0.458 and 0.464.
-
-**Extending the generator.** The valid values of `kind` are printed first, because an assertion with any other value raises a KeyError inside `make_specs`. Then `f_displacement`, a new assertion for protein-binding displacement written in the interface the builders use, is registered into `prompt_v18.ASSERTIONS` inside a `try` block that restores the registry afterwards. The cell reports how often it was drawn and its sentence positive rate when it is the only assertion, about 0.76 rather than 1.0, and the DRAFT paragraph explains that the `unlisted` variant makes any new positive assertion inherit v18's impurity. A NOTE placeholder follows for you to write the section on adapting the approach to another task.
-
-**The scores.** The trajectory table from `results.json`, with a DRAFT paragraph carrying the two caveats that belong beside it, v13 being one seed on padded data and the human baseline not being comparable to published figures. Then the three arms, the decomposition in prose, and the exchange-rate table with a DRAFT paragraph presenting the crossover at 250 sentences as a weak signal.
-
-**Optional training.** Commented out. It trains on the v13, v14 and v18 samples and evaluates on real dev, to reproduce the shape of the composition result rather than the logged numbers. Needs a GPU.
-
-**What we would do differently.** A NOTE placeholder for what you would do differently.
+**6. Applying this to another task.** What carries over, what is specific to DDI, and five checks to run before generating.
 
 ## What has been verified and what has not
 
-I executed the whole notebook end to end, twice, in about twenty seconds with no errors, against the real corpus downloaded from the DDICorpus repository, the real vocabulary, the real spec builders, the committed hand-classified sentences and the committed run records. Everything that depends only on those is verified: the size and rate tables for real text, the purity table, the three uncertainty coefficients, the extension experiment and every results table.
+I executed the whole notebook end to end, twice, in about twenty seconds with no errors, against the real corpus downloaded from the DDICorpus repository, the real vocabulary, the real spec builders, the committed LLM-classified sentences and the committed run records. Everything that depends only on those is verified: the size and rate tables for real text, the purity table, the three uncertainty coefficients, the extension experiment and every results table.
 
 The samples do not exist yet, so for the test I built fixture samples of 400 sentences per version from the real v17 and v18 spec builders, which means their frames, assertions and label distributions are genuine. Their sentence text, though, is a stand-in made of the drug names joined by the construction's name, because real text needs the API. The code paths are therefore exercised truthfully, but any figure that depends on the actual wording will only be correct once the real samples exist. Bag-of-words recovery printed 1.000 on the fixture because the construction name appears literally in the text, and on the real samples it should come out near 0.96. The n-grams on the synthetic side are likewise fixture artefacts. I did not ship the fixtures.
 

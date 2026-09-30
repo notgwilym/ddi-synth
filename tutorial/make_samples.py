@@ -28,10 +28,11 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from ddi.manifest import load_dataset
 from ddi.synth import RAW
-from ddi.verify_binary import group_by_sentence, _sentence_spans, _strip
+from ddi.verify_binary import group_by_sentence, _sentence_spans, _strip, _marked_spans, load_verdicts
 
 # The canonical dataset per version: the one each version's headline F1 was measured on.
 VERSIONS = {
@@ -147,10 +148,81 @@ def main(out_dir, n_sentences, seed):
     print(f"\nwrote {out_dir / 'manifest.json'}")
 
 
+def labelled_sample(out_dir, n_sentences, seed):
+    """Real sentences with, for every pair, the gold label, the LLM's label, the verifier's
+    verdict on it, and the label after rejected positives are demoted.
+
+    The verifier (2c) was run on the LLM's positive rows only, and build_batches numbers
+    mentions over the rows it is given, so verdicts are mapped back to pairs by character
+    span using that numbering. The mapping is checked against run_grid.filtered_pool, the
+    function the grid and the test run used: the pairs marked rejected here must be exactly
+    the pairs whose label that function changed."""
+    import run_grid as rg
+    H, L, S, _ = rg.load_pools()
+    LF, _, _ = rg.filtered_pool(L)
+
+    numbering = {sid: _sentence_spans(rows) for sid, rows in
+                 group_by_sentence([r for r in L if r["label"] != "NONE"]).items()}
+    verdict = {}
+    for v in load_verdicts(rg.VERIFY_GEN).itertuples():
+        spans = numbering.get(v.sent_id)
+        if spans:
+            verdict[(v.sent_id, spans[int(v.m1) - 1], spans[int(v.m2) - 1])] = bool(v.flagged)
+
+    by_sent = defaultdict(list)
+    rejected_here, changed_there = set(), set()
+    for r, f in zip(L, LF):
+        s = _marked_spans(r["text"])
+        key = (r["sent_id"], s[0], s[1]) if len(s) == 2 else None
+        if r["label"] == "NONE":
+            status = "not asked"
+        elif key in verdict:
+            status = "accepted" if verdict[key] else "rejected"
+        else:
+            status = "not asked"          # the request for this sentence errored, or nested spans
+        if status == "rejected":
+            rejected_here.add((r["sent_id"], r["text"]))
+        if f["label"] != r["label"]:
+            changed_there.add((r["sent_id"], r["text"]))
+        by_sent[r["sent_id"]].append({"text": r["text"], "gold": r["gold_label"], "llm": r["label"],
+                                      "verdict": status, "final": f["label"]})
+    assert rejected_here == changed_there, (
+        f"{len(rejected_here)} pairs rejected here, {len(changed_there)} demoted by filtered_pool")
+
+    ids = sorted(by_sent)
+    chosen = sorted(random.Random(seed).sample(ids, min(n_sentences, len(ids))))
+    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "labelled.jsonl", "w") as fp:
+        for sid in chosen:
+            pairs = by_sent[sid]
+            rows = [{"sent_id": sid, "text": p["text"], "label": p["gold"]} for p in pairs]
+            fp.write(json.dumps({"version": "labelled", "sent_id": sid,
+                                 "sentence": _strip(pairs[0]["text"]),
+                                 "n_entities": len(_sentence_spans(rows)),
+                                 "pairs": pairs, "spec": None}) + "\n")
+    counts = defaultdict(int)
+    for sid in chosen:
+        for p in by_sent[sid]:
+            counts[p["verdict"]] += 1
+    man_path = out_dir / "manifest.json"
+    man = json.loads(man_path.read_text()) if man_path.exists() else {}
+    man["labelled"] = {"sentences_available": len(ids), "sentences_sampled": len(chosen),
+                       "verdicts_in_sample": dict(counts), "verifier_gen_id": rg.VERIFY_GEN,
+                       "consistent_with_filtered_pool": True}
+    man_path.write_text(json.dumps(man, indent=1))
+    print(f"labelled: {len(chosen)} of {len(ids)} sentences, verdicts {dict(counts)} -> "
+          f"{out_dir / 'labelled.jsonl'}")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="tutorial/samples")
     ap.add_argument("--n", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--labelled", action="store_true",
+                    help="write only samples/labelled.jsonl, the real sentences with LLM labels and verdicts")
     a = ap.parse_args()
-    main(a.out, a.n, a.seed)
+    if a.labelled:
+        labelled_sample(a.out, a.n, a.seed)
+    else:
+        main(a.out, a.n, a.seed)

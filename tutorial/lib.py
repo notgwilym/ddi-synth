@@ -42,6 +42,18 @@ def load_samples(version):
     return [json.loads(l) for l in path.read_text().splitlines() if l]
 
 
+def load_labelled():
+    """Real sentences where every pair carries its gold label, the LLM's label, the
+    verifier's verdict on it (accepted, rejected, or not asked) and the label after
+    rejected positives are demoted. Built by `make_samples.py --labelled` on the pod."""
+    path = SAMPLES / "labelled.jsonl"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} is missing. Run `python tutorial/make_samples.py --labelled` on a machine "
+            f"with the full datasets and the verifier's output.")
+    return [json.loads(l) for l in path.read_text().splitlines() if l]
+
+
 def sample_manifest():
     """Which versions kept their generation specs, and whether their prompts can still
     be re-rendered from the current code."""
@@ -88,9 +100,12 @@ def flatten(records):
 
 
 def sentence_label(record):
-    """POS if any pair in the sentence is positive. The diagnostics work at sentence
-    level because that is the level a generator makes its choices at."""
-    return "POS" if any(p["label"] != "NONE" for p in record["pairs"]) else "NONE"
+    """MULT if the sentence contains multiple positive pairs of different labels.
+    Else POS if any pair is positive. Else NONE.
+    """
+    positive_labels = {p["label"] for p in record["pairs"] if p["label"] != "NONE"}
+
+    return "MULT" if len(positive_labels) > 1 else "POS" if positive_labels else "NONE"
 
 
 def masked(record):

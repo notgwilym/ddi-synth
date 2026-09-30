@@ -3,17 +3,17 @@
 #
 # ### Gwilym Hughes, Summer 2026 Internship
 #
-# The main reason for looking towards synthetic training data to train AI models is that annotation is the bottleneck to starting new projects. Getting an LLM to write labelled examples instead skips the bottleneck. In theory the knowledge a large LLM has in it's weights should be sufficient to generate good training data for a smaller model like BERT, ie. distillation. This notebook is the result of an 8-week internship trying this for drug-drug interaction extraction.
+# The main reason for looking towards synthetic training data to train AI models is that annotation is the bottleneck to starting new projects. Getting an LLM to write labelled examples instead skips the bottleneck. In theory the knowledge a large LLM has in its weights should be sufficient to generate good training data for a smaller model like BERT, i.e. distillation. This notebook is the result of an 8-week internship trying this for drug-drug interaction extraction.
 #
-# DRAFT: This notebook assumes the earlier sentence-level relation extraction tutorial, which shows how a DDI sentence becomes a set of pair instances and how BiomedBERT is trained on them, and it does not repeat that material. What it adds is the data the internship actually produced: a sample of real output from each of five generator versions, drawn from the datasets the logged results were measured on, so that every claim below can be checked against the sentences that produced it rather than against a reconstruction written for the occasion.
+# The material is the project's own: 400 sentences from each of five generator versions, 400 real sentences labelled three ways (by a person, by the model, and by the model after checking its own positive labels), and the scores behind every figure in the write-up. It assumes the earlier sentence-level relation extraction tutorial, which turns a DDI sentence into pair instances and fine-tunes BiomedBERT on them.
 
 # %% [markdown]
 # ## Setup
 #
-# DRAFT: Everything up to the final optional section runs on a laptop without a GPU and without calling any LLM, because the generated data is already in `samples/` and the logged scores are in `results.json`. The corpus download is only needed for the human comparison sentences.
+# Nothing below needs a GPU or an API key. The corpus download supplies the real sentences in section 1.
 
 # %%
-# !pip install -q bioc spacy scikit-learn pandas
+# !pip install -q bioc spacy scikit-learn pandas matplotlib
 # !python -c "import spacy; spacy.cli.download('en_core_web_sm')"
 # ![ -d ../DDICorpusBrat ] || (cd .. && curl -sL -o DDICorpus.zip "https://github.com/isegura/DDICorpus/raw/refs/heads/master/DDICorpus-2013(BRAT).zip" && unzip -oq DDICorpus.zip)
 
@@ -29,62 +29,30 @@ from lib import load_samples, human_sentences, sentence_label, masked, flatten
 synth = {v: load_samples(v) for v in lib.VERSIONS}
 human = human_sentences("train", n=400, seed=0)
 data = {"human": human, **synth}
+R = lib.results()
 {k: len(v) for k, v in data.items()}
 
-# %% [markdown]
-# ## The problem, and how this notebook is built
-#
-# DRAFT: This section sets out the task, the idea being tested, and how the code in the rest of the notebook is organised, so that each later cell can be read as one step in an argument rather than as a standalone piece of code.
-#
-# ### The task
-#
-# DRAFT: Drug-drug interaction extraction takes a sentence whose drug mentions are already marked and asks, for every pair of those mentions, whether the sentence states that the two interact and, if so, how. The earlier tutorial treats this as classification: each pair becomes a separate copy of the sentence with its two drugs tagged, and a classifier assigns one of five labels, MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking them together, INT for an interaction stated without detail, and NONE. The label belongs to the pair rather than to the sentence, so a sentence naming four drugs yields six instances that can each carry a different label, and about five pairs in six in the corpus are NONE. Performance is reported as micro-F1 over the four positive labels, since counting NONE would reward a model that never predicts anything else.
-#
-# ### Two ways to spend an LLM
-#
-# DRAFT: Annotating pairs to this standard takes trained annotators working from a detailed guideline, which is the bottleneck synthetic data is meant to remove. An LLM can help in two ways. It can write new sentences together with their labels, which removes the need for any corpus at all, or it can label sentences that already exist, which removes the annotators but still needs the text. Most of this notebook is about the first, because that is what the internship set out to do, and the second appears at the end as the comparison that changed how the first should be judged.
-#
-# ### How a generated sentence is made
-#
-# DRAFT: The generator never asks the model to label anything. It first builds a specification, a small structured description of one sentence listing which drugs must appear and which pairs among them must stand in which relation, then renders that specification as a prompt and stores the model's sentence beside the specification that produced it. A second, deterministic stage finds each drug in the sentence, tags every pair, and takes each pair's label from the specification. Because the specification states the relations before the sentence exists, it is the gold annotation, and the labels are correct by construction. Keeping the two stages apart means the expensive, non-deterministic step never has to be repeated when the way instances are extracted changes.
-#
-# ```
-# specification -> prompt -> LLM -> sentence -> pair instances -> BiomedBERT
-# ```
-#
-# Here is one sentence from the final generator, v18, as it was actually produced, with its specification and the pair labels taken from it.
-
-# %%
 TAGS = re.compile(r"\[(E[12])\](.*?)\[/\1\]")
 
 def pair_names(text):
     found = {t: re.sub(r"\[/?E[12]\]", "", name) for t, name in TAGS.findall(text)}
     return found.get("E1"), found.get("E2")
 
-rec = next(r for r in synth["v18"]
-           if r["spec"] and r["spec"].get("positives") and r["n_entities"] >= 3)
-spec = rec["spec"]
-# entity keys run A, B, C ... in the order the specification lists them
-surface = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", spec.get("entities") or []))
+# %% [markdown]
+# ## 1. The task
+#
+# A sentence arrives with its drug mentions already marked, and every pair of mentions needs one of five labels: MECHANISM for a pharmacokinetic change, EFFECT for a clinical or pharmacodynamic consequence, ADVISE for a recommendation about taking the two together, INT for an interaction stated without detail, and NONE. The label belongs to the pair, not the sentence, so a sentence naming four drugs produces six instances, and each can carry a different label. Here is a real one.
 
-print("assertions ", spec.get("assertions"))
-print("modifiers  ", spec.get("modifiers"))
-print("variants   ", spec.get("variants"))
-print("\ngold, as the specification states it")
-for p in spec["positives"]:
-    a, b = p["between"]
-    print(f"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}")
-print("\nwhat the model wrote\n ", rec["sentence"], "\n")
-
-pd.DataFrame([{"drug A": x, "drug B": y, "label": p["label"]}
-              for p in rec["pairs"] for x, y in [pair_names(p["text"])]])
+# %%
+ex = next(r for r in human if 3 <= r["n_entities"] <= 4 and sentence_label(r) == "POS")
+print(ex["sentence"], "\n")
+pd.DataFrame([{"drug A": a, "drug B": b, "label": p["label"]}
+              for p in ex["pairs"] for a, b in [pair_names(p["text"])]])
 
 # %% [markdown]
-# DRAFT: The pairs the specification names come out with its labels and every other pair comes out NONE, which is how a single generated sentence supplies negative examples as well as positive ones. Whether the model's sentence actually says what the specification asked for is a separate question, which the project checked with a second model pass.
+# About five pairs in six in the corpus are NONE, so scores are micro-F1 over the four positive labels; counting NONE would reward a model that never predicts anything else.
 #
-# ### One record shape for every dataset
-#
-# DRAFT: Everything the notebook analyses, generated or real, is held as a list of sentence records of one shape. A record keeps the plain sentence, how many drugs it mentions, all of its pair instances with their labels, and, for generated sentences, the specification that produced it. Records are per sentence rather than per pair because every argument below is about sentences: how many drugs they carry, which construction built them, and how the labels among their pairs are distributed. Real sentences use the same shape with the specification left empty, so each diagnostic is written once and applied to all six datasets.
+# Every dataset below, generated or real, is held as a list of records of this shape: the sentence, the number of drug mentions, every pair with its label, and, for generated sentences, the specification that produced it. Real sentences are built with the project's pair construction, one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so the two builders must not be mixed in any comparison.
 
 # %%
 def shape(record):
@@ -98,14 +66,10 @@ def shape(record):
         return v
     return {k: show(v) for k, v in record.items()}
 
-pd.DataFrame({"generated (v18)": shape(rec), "real": shape(human[0])})
+pd.DataFrame({"generated (v18)": shape(synth["v18"][0]), "real": shape(human[0])})
 
 # %% [markdown]
-# DRAFT: Real sentences are built with the project's own pair construction, which makes one instance per unordered pair. The earlier tutorial makes one per ordered pair, twice as many, so mixing the two builders would silently double the counts in any comparison between real and generated data.
-#
-# ### Where the data and the numbers come from
-#
-# DRAFT: Nothing in this notebook is regenerated or retrained in order to make a point. The generated sentences are samples of 400 drawn from the datasets the logged results were measured on, one per generator version, and each is joined back to the specification that produced it wherever the raw generation file survived; v13's did not. The scores are read from `results.json`, which is rebuilt from the project's run records and stores beside each figure the ids of the runs behind it. The specification builders used later are the project's own code, run live, since building a specification costs nothing.
+# The generated sentences are samples of 400 from the datasets the logged results were measured on, each joined back to its specification wherever the raw generation file survived; v13's did not. Scores come from `results.json`, rebuilt from the run records with the ids of the runs behind each figure. `lib.py` holds only loading, masking and training; every measurement is computed in the cells below.
 
 # %%
 cols = ["dataset_id", "gen_id", "sentences_available", "sentences_sampled",
@@ -118,18 +82,31 @@ print(f"v18 scored {v18['f1']} (sd {v18['sd']}) over {v18['n_seeds']} seeds, "
       f"from runs {', '.join(v18['run_ids'])}")
 
 # %% [markdown]
-# ### What is hidden and what is shown
+# ## 2. Writing labelled sentences
 #
-# DRAFT: The helper file `lib.py` holds anything that would be copied unchanged into another project: loading the samples and the corpus sentences, turning records back into instances, masking drug names, the guessing game, and training. Every diagnostic is written out in the notebook itself, because in each case the few lines of code are the explanation, and hiding them behind a function would leave only a name to trust.
-#
-# ### How the rest is arranged
-#
-# DRAFT: The sections follow the order in which the internship found things. Each generator removed one problem and exposed the next, and for the first two problems the notebook asks the reader to exploit the problem by hand before measuring it, first with a rule that sees only how many drugs a sentence mentions and then with a guessing game on masked sentences. After that come how the fix was found in the real corpus, the fix itself, how to extend the generator, what every version scored, and finally the comparison with labelling real text.
+# The generator never asks the model for a label. It builds a specification, a structured description of one sentence that lists the drugs it must mention and which pairs among them stand in which relation, renders it as a prompt, and stores the model's sentence beside the specification. A deterministic second stage finds each drug in the sentence, tags every pair, and copies each pair's label from the specification. The specification is written before the sentence exists, so it is the gold annotation: the labels are correct by construction.
+
+# %%
+rec = next(r for r in synth["v18"]
+           if r["spec"] and r["spec"].get("positives") and r["n_entities"] >= 3)
+spec = rec["spec"]
+surface = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", spec.get("entities") or []))   # keys run A, B, C in list order
+
+print("assertions ", spec.get("assertions"))
+print("modifiers  ", spec.get("modifiers"))
+print("variants   ", spec.get("variants"))
+print("\ngold, as the specification states it")
+for p in spec["positives"]:
+    a, b = p["between"]
+    print(f"  {surface.get(a, a)}  {p['label']}  {surface.get(b, b)}")
+print("\nthe model wrote\n ", rec["sentence"], "\n")
+pd.DataFrame([{"drug A": a, "drug B": b, "label": p["label"]}
+              for p in rec["pairs"] for a, b in [pair_names(p["text"])]])
 
 # %% [markdown]
-# ## What each generator actually produced
+# The pairs the specification names carry its labels and every other pair is NONE, so one generated sentence supplies negative examples as well as positive ones.
 #
-# DRAFT: Before any model is trained, the simplest description of a dataset is how many drugs its sentences mention, how many pairs that produces, and what fraction of those pairs are positive, and it is worth looking at this table for a while before reading on because most of the story of the internship is already in it.
+# ### 2.1 What each generator produced
 
 # %%
 def describe(records):
@@ -146,12 +123,11 @@ def describe(records):
 pd.DataFrame({k: describe(v) for k, v in data.items()}).T
 
 # %% [markdown]
-# DRAFT: The v13 row is the one to look at. Almost every sentence it wrote contains exactly one pair, and that pair is almost always positive, which is exactly what was asked of it (write a sentence in which these two drugs interact) and exactly what makes it useless, because real sentences contain several drugs and most of the pairs among them are NONE. The mean against the median for the human row is also worth a moment: a small number of sentences enumerate dozens of drugs and produce hundreds of pairs each, so the mean is dragged far above what a typical sentence looks like.
-
-# %% [markdown]
-# ## Shortcut one: count the drugs
+# In v13 almost every sentence contains one pair and that pair is almost always positive: the generator did exactly what it was asked, which was to write a sentence in which two given drugs interact. Real sentences carry several drugs, and most of the pairs among them are NONE. The gap between the mean and the median for real text comes from a few sentences that list dozens of drugs and produce hundreds of pairs each.
 #
-# DRAFT: Before looking at the diagnostic, write a classifier yourself using nothing but the number of drugs in the sentence, with no access to its words, and see how it does on each dataset.
+# ### 2.2 The pair-count shortcut
+#
+# The rule below sees only how many drugs a sentence mentions, never its words.
 
 # %%
 def my_rule(record):
@@ -164,7 +140,7 @@ def score_rule(rule, records):
 {k: round(score_rule(my_rule, v), 3) for k, v in data.items()}
 
 # %% [markdown]
-# DRAFT: A rule that ignores every word in the sentence does very well on v13 and badly on real text. A classifier trained on v13 finds the same rule, because it is the shortest route to a low loss on that data, and then applies it to real sentences where it no longer holds. This is the composition shortcut, and the table below is the diagnostic that exposed it. The empty cells in v13's column are not missing data but the finding itself, since the generator never once wrote a sentence mentioning more than two drugs.
+# The rule scores well on v13 and badly on real text. A classifier trained on v13 finds the same rule, because it is the shortest path to a low loss on that data, and applies it to real sentences where it no longer holds. The table below breaks the positive rate down by the number of drugs. The empty cells in v13's column are the finding itself: v13 never wrote a sentence with more than two drugs.
 
 # %%
 def positive_rate_by_entities(records):
@@ -178,33 +154,63 @@ pd.DataFrame({k: positive_rate_by_entities(v) for k, v in data.items()}) \
   .rename_axis("drugs (6 = six or more)").fillna("none written")
 
 # %% [markdown]
-# ## Shortcut two: read the construction
+# ### 2.3 In detail: a label that can be read off the construction
 #
-# DRAFT: Fixing the composition shortcut by adding drugs that take no part in the relation improved precision but left recall flat, which at the time looked like a failed fix and was in fact a second shortcut becoming the binding constraint. To see it, play the game below. Each sentence has its drug names replaced with DRUG, and the task is to say whether the sentence asserts an interaction between any two of them.
+# v14 added drugs that take no part in the relation, which removed the pair-count shortcut. Its precision rose and its recall did not (scores in 2.4). The cause is visible in a single v17 sentence.
+#
+# v17 built each sentence from one of nineteen named constructions, called frames, derived from the annotation guidelines. The cell picks the frame that most often produces positive sentences and one short sentence built from it.
 
 # %%
-game = lib.GuessGame(synth["v17"], n=10, seed=1)
-game.show()
+v17 = [r for r in synth["v17"] if r["spec"]]
+focus = Counter(r["spec"]["frame"] for r in v17 if sentence_label(r) == "POS").most_common(1)[0][0]
+one = next(r for r in v17 if r["spec"]["frame"] == focus and 3 <= r["n_entities"] <= 5)
+keys = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", one["spec"].get("entities") or []))
+fill = lambda v: re.sub(r"\{([A-Z])\}", lambda m: keys.get(m.group(1), m.group(0)), str(v))
 
-# %%
-my_guesses = ["POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE"]   # edit
-game.score(my_guesses)
+print("frame:", focus)
+print("\nthe specification asked for")
+for k, v in one["spec"].get("says") or []:
+    print(f"  {k}: {fill(v)}")
+print("\nthe model wrote\n ", one["sentence"], "\n")
+pd.DataFrame([{"drug A": a, "drug B": b, "label": p["label"]}
+              for p in one["pairs"] for a, b in [pair_names(p["text"])]])
 
 # %% [markdown]
-# DRAFT: Now play the same game on real sentences.
+# Nothing here is wrong. The specification asked for a relation, the model wrote it, and the pair carries the label the specification gave it. The problem appears only across sentences. Here are the sentence labels of every sample sentence built from the same frame, then of every frame.
 
 # %%
-real_game = lib.GuessGame(human, n=10, seed=1)
-real_game.show()
-
-# %%
-my_real_guesses = ["POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE"]   # edit
-real_game.score(my_real_guesses)
+same = [r for r in v17 if r["spec"]["frame"] == focus]
+print(f"{len(same)} sample sentences use '{focus}':", dict(Counter(sentence_label(r) for r in same)), "\n")
+pd.crosstab(pd.Series([r["spec"]["frame"] for r in v17], name="frame"),
+            pd.Series([sentence_label(r) for r in v17], name="sentence label"))
 
 # %% [markdown]
-# DRAFT: Scored on accuracy alone, the two games come out about the same for anyone who knows the domain, and I got 9 of 10 on each. What differs is how the answers were reached. On the generated sentences every NONE was given away by the wording used to describe a drug that takes no part in the relation, phrases such as "part of the background regimen", "used if the first choice is unsuitable" and "prescribed for an unrelated condition", so no pharmacology was needed at all, whereas on the real sentences each answer had to come from reading the relation itself. A classifier takes the cheaper route whenever one exists, and the generated data offered one.
+# Every row has a zero in one column. Each frame always produces the same sentence label, so knowing the frame settles the label.
 #
-# Both of my misses were conventions rather than pharmacology. On the generated side it was v17's `incompatible` construction, which the generator always labels NONE while the one real corpus sentence using it is positive, and on the real side it looked like a guideline convention case. The measurement that makes the difference in route precise asks how much of the uncertainty about a sentence's label is removed by knowing its construction.
+# The uncertainty coefficient turns that observation into a number. With $Y$ the sentence label and $F$ the frame, the entropy of the label is $H(Y) = -\sum_y p(y)\log_2 p(y)$, and the entropy left once the frame is known is $H(Y \mid F) = \sum_f p(f)\,H(Y \mid F = f)$. The coefficient is the share of the label's uncertainty that the frame removes:
+#
+# $$U(Y \mid F) = \frac{H(Y) - H(Y \mid F)}{H(Y)}$$
+#
+# It is 1 when the frame determines the label and 0 when the frame says nothing about it. It is not sklearn's `normalized_mutual_info_score`, which divides by the average of both entropies: a nineteen-way frame carries far more entropy than a two-way label, so that measure reports about 0.4 even when every frame is pure. Computed by hand from the counts above:
+
+# %%
+labels = Counter(sentence_label(r) for r in v17)
+n = sum(labels.values())
+H_Y = -sum(c / n * math.log2(c / n) for c in labels.values())
+
+by_frame = defaultdict(Counter)
+for r in v17:
+    by_frame[r["spec"]["frame"]][sentence_label(r)] += 1
+H_Y_given_F = sum(sum(c.values()) / n * -sum(k / sum(c.values()) * math.log2(k / sum(c.values()))
+                                            for k in c.values() if k)
+                  for c in by_frame.values())
+
+print(f"H(Y)     = {H_Y:.3f} bits   from {dict(labels)}")
+print(f"H(Y | F) = {H_Y_given_F:.3f} bits   every frame is pure, so each term is zero")
+print(f"U(Y | F) = {(H_Y - H_Y_given_F) / H_Y:.3f}")
+
+# %% [markdown]
+# The same measure, as a function used for every comparison that follows:
 
 # %%
 def entropy(counts):
@@ -218,7 +224,7 @@ def uncertainty_coefficient(pairs):
     This is not sklearn's normalized_mutual_info_score, which divides by the mean of
     both entropies and so reports about 0.4 for a 19-way construction that fully
     determines a binary label. The asymmetric version asks the question that matters
-    here, which is whether knowing the construction tells you the label."""
+    here, which is whether knowing the construction settles the label."""
     joint = Counter(pairs)
     px, py = Counter(), Counter()
     for (x, y), c in joint.items():
@@ -228,28 +234,58 @@ def uncertainty_coefficient(pairs):
              for (x, y), c in joint.items())
     return mi / entropy(py)
 
-v17_frames = [(r["spec"]["frame"], sentence_label(r)) for r in synth["v17"] if r["spec"]]
-round(uncertainty_coefficient(v17_frames), 3)
+round(uncertainty_coefficient([(r["spec"]["frame"], sentence_label(r)) for r in v17]), 3)
 
 # %% [markdown]
-# DRAFT: A value of 1.0 would be harmless on its own if the construction were invisible in the finished sentence, but it is not, and a bag-of-words model with the drug names masked out can name the construction from the text.
+# A label fixed by the frame would do no harm if the frame were invisible in the finished sentence, since the classifier never sees the specification. The test is whether the words give the frame away. The cell masks every drug name, trains a bag-of-words model to name the frame, and checks the sentence from above against the words the model relies on most for its frame.
 
 # %%
+import numpy as np
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 
-with_frame = [r for r in synth["v17"] if r["spec"]]
-X = CountVectorizer(ngram_range=(1, 2), min_df=2).fit_transform([masked(r) for r in with_frame])
-y = [r["spec"]["frame"] for r in with_frame]
+vec = CountVectorizer(ngram_range=(1, 2), min_df=2)
+X = vec.fit_transform([masked(r) for r in v17])
+y = [r["spec"]["frame"] for r in v17]
+clf = LogisticRegression(max_iter=3000).fit(X, y)
+names = vec.get_feature_names_out()
+top = [names[i] for i in np.argsort(clf.coef_[list(clf.classes_).index(focus)])[::-1][:12]]
+
+print("the sentence, masked\n ", masked(one), "\n")
+print(f"strongest features for '{focus}':", ", ".join(top))
+print("of those, present in this sentence:", ", ".join(w for w in top if w in masked(one).lower()) or "none")
 acc = cross_val_score(LogisticRegression(max_iter=3000), X, y, cv=3).mean()
-print(f"construction recovered from masked text: {acc:.3f} over {len(set(y))} classes "
-      f"(chance {1 / len(set(y)):.3f})")
+print(f"\nframe recovered from masked text: {acc:.3f} over {len(set(y))} frames (chance {1 / len(set(y)):.3f})")
 
 # %% [markdown]
-# DRAFT: On this 400-sentence sample the construction is recovered about three times in four against a chance rate of one in nineteen. On the full 5,702-sentence dataset the same test reaches 0.961, the difference most likely being the amount of training data per class rather than anything about the text, since three-fold cross-validation over 400 sentences leaves about fourteen examples of each construction to learn from.
+# On this 400-sentence sample the frame is recovered three times in four against a chance rate of one in nineteen; on the full 5,702-sentence dataset the same test reaches 0.961. The difference is training data per frame: three-fold cross-validation over 400 sentences leaves about fourteen examples of each. The chain is complete in both cases. The words name the frame and the frame names the label, a path from surface to answer that never asks whether the two drugs interact.
 #
-# So the words give away the construction and the construction gives away the label, which is a complete route from surface to answer that never passes through the question of whether these two drugs interact. The most repeated phrases in the generated text show where the words came from.
+# The same test works on a person. The game below shows ten masked v17 sentences and asks whether each asserts an interaction; the answers print the frame beside each one.
+
+# %%
+game = lib.GuessGame(synth["v17"], n=10, seed=1)
+game.show()
+
+# %%
+my_guesses = ["POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE"]   # edit
+game.score(my_guesses)
+
+# %% [markdown]
+# The same game on real sentences:
+
+# %%
+real_game = lib.GuessGame(human, n=10, seed=1)
+real_game.show()
+
+# %%
+my_real_guesses = ["POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE", "POS", "NONE"]   # edit
+real_game.score(my_real_guesses)
+
+# %% [markdown]
+# I scored 9 of 10 on each, so accuracy does not separate the two. The route does. Every generated NONE was given away by the wording attached to a drug outside the relation, such as "part of the background regimen", "used if the first choice is unsuitable" or "prescribed for an unrelated condition", and needed no pharmacology; each real answer came from reading the relation. Both misses were conventions rather than pharmacology: v17's `incompatible` frame, which the generator labels NONE although the one corpus sentence using it is positive, and on the real side what looked like a guideline convention case.
+#
+# The most repeated phrases show where those words come from.
 
 # %%
 def top_ngrams(records, n=4, k=10):
@@ -263,12 +299,9 @@ pd.DataFrame({"v17": [f"{g}  ({c})" for g, c in top_ngrams(synth["v17"])],
               "human": [f"{g}  ({c})" for g, c in top_ngrams(human)]})
 
 # %% [markdown]
-# DRAFT: v17 described each non-participating drug using one of seven fixed phrases, such as "started before the others and since stopped", and those seven phrases supplied the most repeated 4-grams in the entire generated corpus. Worse, every negative construction had been written to avoid effect vocabulary, so the classifier learned that words like caused and prolonged mean positive and that denial language means NONE, neither of which holds in real text.
-
-# %% [markdown]
-# ## Finding the fix in the real corpus
+# v17 described every drug outside the relation with one of seven fixed phrases, and those phrases supply its most repeated 4-grams; real text's are drug enumerations. Its negative frames also avoided effect vocabulary, so words such as *caused* and *prolonged* mark positives and denial language marks NONE, neither of which holds in real text.
 #
-# DRAFT: The way out came from classifying a sample of real corpus sentences by construction, which was done once for 300 sentences and is committed in `runs/frames/`, and then asking two questions of each construction: whether it is ever the main clause of a real sentence, and whether its positive rate in the generated data matches its positive rate in the corpus.
+# The corpus shows which constructions carry labels. 300 real sentences were classified by construction, once, by `gpt-oss-120b` at temperature 0, and committed in `runs/frames/`. For each construction the table gives how often it is the main clause of a sentence, how often it appears at all, and its positive rate in the corpus against v17.
 
 # %%
 import json
@@ -300,12 +333,12 @@ for f in sorted(present, key=lambda f: -present[f]):
 pd.DataFrame(rows)
 
 # %% [markdown]
-# DRAFT: Look at appositive and coordinate. Neither is the main clause of a single real sentence, yet v17 sampled them as though they were alternatives to mechanism and denial, and made appositive sentences positive every time against a corpus rate near four in ten. These are not assertions at all but ways of packaging one, and that observation is the whole of the fix.
+# Appositive and coordinate constructions appear in real sentences but are never the main clause. They package an assertion rather than make one, yet v17 sampled them as alternatives to mechanism and denial, and made appositive sentences positive every time against a corpus rate near four in ten.
 
 # %% [markdown]
-# ## The fix: two axes
+# ### 2.4 The fix: two axes
 #
-# DRAFT: v18 splits the inventory in two. Assertions bind a pair of drugs and carry a label, and a sentence draws one or two of them, the second usually negative. Modifiers carry no label and are sampled independently: headings, repeated mentions, dose details, appositives. This is the real v18 code, and it runs here without any API calls, because building and rendering a spec is free.
+# v18 splits the inventory. Assertions bind a pair of drugs and carry a label; a sentence draws one or two, the second usually negative. Modifiers carry no label and are drawn independently: headings, repeated mentions, dose details, appositives. The cell runs the project's v18 code; building and rendering a specification needs no API call.
 
 # %%
 from ddi.vocab import build_vocab
@@ -320,7 +353,7 @@ print(f"gold {s['positives'] or 'all NONE'}\n")
 print(p18.render(s))
 
 # %% [markdown]
-# DRAFT: The same measurement as before, now on v18's assertion sets and on the real corpus's constructions. The target is not zero, because real constructions do carry some information about the label, and a generator that drove this to zero would be writing denials that are as often positive as negative, which is its own artefact. The target is the corpus.
+# The same coefficient for v17's frames, v18's assertion sets, and the corpus's constructions. The target is the corpus, not zero: real constructions carry some information about the label, and a generator at zero would be writing denials as often positive as negative.
 
 # %%
 from ddi import prompt as p17
@@ -334,18 +367,23 @@ pd.Series({
 }).round(3)
 
 # %% [markdown]
-# DRAFT: v18 did not just come down from 1.0, it landed within about a hundredth of the corpus. In the logged runs this change took F1 from 0.391 to 0.486, and the whole of the gain was in recall, which went from 0.403 to 0.628 while precision barely moved. That is the signature of a shortcut being removed: the classifier stops relying on a cue that real text does not contain and starts predicting on sentences it previously had no handle on.
+# v18's coefficient is 0.458 against the corpus's 0.464. In the logged runs the change took F1 from 0.391 to 0.486 [dev], and the gain was recall, 0.403 to 0.628, with precision nearly unchanged: the classifier stopped relying on a cue that real text does not contain. The scores of every version:
+
+# %%
+pd.DataFrame(R["trajectory"]).T[["f1", "sd", "p", "r", "n_seeds"]]
 
 # %% [markdown]
-# ## Extending the generator
+# The v13 figure is one seed on a version of v13 padded with extra negatives, not the raw generation sampled above. All five are development scores. The human baseline on the same set is about 0.80, which is not comparable with the 0.85 to 0.90 in much of the DDI-2013 literature: those papers delete trivially negative pairs before training and evaluation, and this project does not.
 #
-# DRAFT: An assertion is a function that takes the entities chosen for a sentence and a random generator, and returns what the sentence must say, which pairs are positive and with what label, and which entities it concerns. The `kind` field is not free text: it has to be one of the keys below, because it selects which stylistic axes the renderer samples, and anything else raises a KeyError deep inside `make_specs`.
+# ### 2.5 Extending the generator
+#
+# An assertion is a function from the sentence's entities and a random generator to what the sentence must say, which pairs are positive and with which label, and which entities it concerns. Its `kind` selects the stylistic axes the renderer samples, so it must be one of these; anything else raises a KeyError inside `make_specs`.
 
 # %%
 sorted(p17.AXES_FOR_KIND)
 
 # %% [markdown]
-# DRAFT: Here is a new assertion for protein-binding displacement, a real mechanism the inventory does not cover. It is registered, specs are built, and the registry is restored afterwards so the rest of the notebook is unaffected.
+# A new assertion for protein-binding displacement, a mechanism the inventory lacks, registered and measured without generating anything:
 
 # %%
 def f_displacement(ents, rng):
@@ -370,55 +408,161 @@ print(f"sentence positive rate when it is the only assertion: "
       f"{sum(bool(x['positives']) for x in alone) / len(alone):.3f}")
 
 # %% [markdown]
-# DRAFT: A positive assertion on its own ought to produce a positive sentence every time, and it comes out at roughly three in four instead. That is deliberate and it is inherited rather than written: v18's `unlisted` variant retargets about a quarter of positive assertions at a drug that is not in the sentence's list, which turns them NONE, so a new assertion cannot become a fresh label-pure shortcut however carelessly it is written. Everything in this section costs nothing, because it all happens before a single sentence is generated, and that is the practical lesson: check a design in spec space first, and only pay for generation once the numbers there look right.
-#
-# NOTE: adaptation to another task goes here. Which parts are DDI-specific (label set, guidelines conventions, vocabulary, the pair structure) and which carry over unchanged (spec, render, generate, the two-stage raw/instance split, the diagnostics above).
+# Alone, the new positive assertion yields a positive sentence about three times in four, not every time. v18's `unlisted` variant retargets about a quarter of positive assertions at a drug outside the sentence's list, which makes them NONE, so a new assertion inherits that impurity and cannot become a new shortcut. All of this costs nothing, because a specification can be built and measured before any sentence is generated.
 
 # %% [markdown]
-# ## What the versions scored
+# ## 3. Labelling real sentences
 #
-# DRAFT: Every number here is recomputed from the committed run records and each carries the ids of the runs behind it, so none of it depends on anyone's memory of what a run produced.
+# The other use of the model keeps real sentences and their marked drugs and asks only for the labels. The annotator sees eight pairs per request, with the guideline conventions in its prompt. Here is one sentence from the labelled sample, with the gold label and the model's label for every pair.
 
 # %%
-R = lib.results()
-pd.DataFrame(R["trajectory"]).T[["f1", "sd", "p", "r", "n_seeds"]]
+lab = lib.load_labelled()   # built on the pod by make_samples.py --labelled
+
+def fp_rejected(p):
+    return p["llm"] != "NONE" and p["gold"] == "NONE" and p["verdict"] == "rejected"
+
+pool = [r for r in lab if any(fp_rejected(p) for p in r["pairs"]) and len(r["pairs"]) >= 3]
+story = min(pool, key=lambda r: len(r["pairs"]))
+print(story["sentence"], "\n")
+pd.DataFrame([{"drug A": a, "drug B": b, "gold": p["gold"], "model": p["llm"]}
+              for p in story["pairs"] for a, b in [pair_names(p["text"])]])
 
 # %% [markdown]
-# DRAFT: Two caveats belong next to this table. The v13 figure is a single seed and was measured on a version of the v13 data padded with extra negatives, not on the raw generation sampled above. And the human baseline these should be read against is about 0.79, which is not comparable to the 0.85 to 0.90 reported in much of the DDI-2013 literature, because those papers usually delete trivially negative pairs before training and evaluation and this project does not.
-
-# %% [markdown]
-# ## The comparison that reframed it
-#
-# DRAFT: Eight weeks went into making generated text better. The comparison that should have come first keeps the real sentences and asks the LLM only for the labels, on the same sentences, with the same entity spans, so that the only thing varying between arms is where the text came from and where the labels came from.
+# At least one pair here is positive to the model and NONE in the gold labels. Across the sample the pattern is the same: the model finds most real interactions and adds interactions the annotators did not mark. The label-level scores, the model's labels scored against gold with the task metric:
 
 # %%
-arms = R["three_arm"]
-pd.DataFrame({k: arms[k] for k in ["human", "llm_labels", "synthetic"]}).T[["f1", "sd", "p", "r", "n_seeds"]]
+def prf(pairs, key):
+    tp = sum(1 for p in pairs if p[key] != "NONE" and p[key] == p["gold"])
+    fp = sum(1 for p in pairs if p[key] != "NONE" and p[key] != p["gold"])
+    fn = sum(1 for p in pairs if p["gold"] != "NONE" and p[key] != p["gold"])
+    P, Rc = tp / max(tp + fp, 1), tp / max(tp + fn, 1)
+    return {"precision": round(P, 3), "recall": round(Rc, 3),
+            "F1": round(2 * P * Rc / max(P + Rc, 1e-9), 3), "positives": tp + fp}
+
+pairs = [p for r in lab for p in r["pairs"]]
+print("gold positives:", sum(p["gold"] != "NONE" for p in pairs), "of", len(pairs), "pairs")
+prf(pairs, "llm")
 
 # %% [markdown]
-# DRAFT: Swapping human labels for LLM labels on real text costs 0.128, and swapping real text for generated text costs a further 0.195, so the text matters more than the labels even though the generated labels are correct by construction and the LLM's own labels are noticeably wrong, over-predicting positives with precision well below human while recall is slightly above it.
-#
-# The exchange-rate runs complicate that in an interesting way.
+# On the full labelled pool the annotator reached precision 0.623 and recall 0.881 against gold [dev]. Trained on, those labels cost 0.126 F1 against the same sentences with human labels [test]:
 
 # %%
-xr = R["exchange_rate"]
-pd.DataFrame({b: {"human": v["human"]["f1"], "llm labels": v["llm_labels"]["f1"]}
-              for b, v in xr.items()}).T.rename_axis("real sentences")
+T = R["test"]
+readable = {"test-bfull-none": "human labels", "test-b0-llm": "model labels", "test-b0-llmf": "model labels, checked"}
+pd.DataFrame({readable[k]: T[k] for k in ["test-bfull-none", "test-b0-llm"]}).T[["f1", "sd", "p", "r", "n_seeds"]]
 
 # %% [markdown]
-# DRAFT: At 250 sentences the LLM-labelled arm scores higher than the human-labelled one, and above roughly 400 the order reverses and the gap widens. With five seeds the difference at 250 is about one and a half standard errors, so it is a weak signal rather than a finding, but if it holds it says that LLM labels are worth most when real annotation is scarcest, which is exactly the situation synthetic data was supposed to rescue.
+# ## 4. In detail: checking the model's labels
+#
+# The model's errors are mostly false positives, so the check asks about positives only. A second call, the verifier, receives the sentence with every drug mention numbered and one question per pair: would the guidelines annotate an interaction between these two mentions? A pair the verifier rejects is demoted to NONE. This is the exact question it was sent for the sentence above.
+
+# %%
+from ddi.verify_binary import SYSTEM, build_batches, render
+
+asked = [{"sent_id": story["sent_id"], "text": p["text"], "label": p["llm"]}
+         for p in story["pairs"] if p["llm"] != "NONE"]
+print("\n".join(SYSTEM.splitlines()[:9]), "\n  ...\n")
+print(render(build_batches(asked)[0]))
+
+# %% [markdown]
+# Mentions are numbered rather than named because the same drug named twice is two mentions, and the guidelines let only one of them take part in an interaction. Only the model's positive pairs are asked about, so the numbering counts the mentions in those pairs. The verdicts, and the labels after demotion:
+
+# %%
+pd.DataFrame([{"drug A": a, "drug B": b, "gold": p["gold"], "model": p["llm"],
+               "verifier": p["verdict"], "after": p["final"]}
+              for p in story["pairs"] for a, b in [pair_names(p["text"])]])
+
+# %% [markdown]
+# In this sentence the verifier rejects a pair that is NONE in gold, and demotion corrects it. Whether that holds across the sample decides whether the check works: the rejected positives should be NONE in gold far more often than the accepted ones.
+
+# %%
+llm_pos = [p for p in pairs if p["llm"] != "NONE"]
+def gold_none(ps):
+    k = sum(p["gold"] == "NONE" for p in ps)
+    return f"{k:>4} of {len(ps):<4} ({k / max(len(ps), 1):.0%})"
+print("model positives that are NONE in gold  ", gold_none(llm_pos))
+print("  rejected by the verifier             ", gold_none([p for p in llm_pos if p["verdict"] == "rejected"]))
+print("  accepted by the verifier             ", gold_none([p for p in llm_pos if p["verdict"] == "accepted"]))
+print("  not asked, the request failed        ", gold_none([p for p in llm_pos if p["verdict"] == "not asked"]))
+
+# %% [markdown]
+# NOTE: state the result once `labelled.jsonl` exists. Give the share of rejected positives that are NONE in gold against the share among accepted ones, and say in one sentence whether the verifier is removing false positives or rejecting at random.
+#
+# The check also has a cost: a rejected pair that is positive in gold loses a true interaction.
+
+# %%
+cost = [(r, p) for r in lab for p in r["pairs"] if p["verdict"] == "rejected" and p["gold"] != "NONE"]
+print(f"{len(cost)} rejected pairs are positive in gold")
+if cost:
+    r, p = cost[0]
+    a, b = pair_names(p["text"])
+    print(f"\n{r['sentence']}\n\n{a} and {b}: gold {p['gold']}, model {p['llm']}, demoted to NONE")
+
+# %% [markdown]
+# NOTE: describe the example above in one sentence, and what kind of pair the verifier wrongly rejects.
+#
+# Scored against gold before and after demotion:
+
+# %%
+pd.DataFrame({"before checking": prf(pairs, "llm"), "after checking": prf(pairs, "final")})
+
+# %% [markdown]
+# On the test set, the classifier trained on checked labels moved from precision 0.578 and recall 0.824 to 0.676 and 0.790 [test], and checking recovered 39% of the label cost from section 3:
+
+# %%
+pd.DataFrame({readable[k]: T[k] for k in ["test-bfull-none", "test-b0-llmf", "test-b0-llm"]}).T[["f1", "sd", "p", "r", "n_seeds"]]
+
+# %% [markdown]
+# ## 5. Spending annotation
+#
+# With some human-labelled sentences and more without labels, the question is what to add. The grid fixed a human budget of 0 to 1,000 sentences and added nothing, model labels on the remaining sentences, checked model labels, generated v18 text, or both. These are validation scores. Every arm trained for at least 500 optimisation steps; with a fixed three epochs, the smallest human-only arms collapse to predicting NONE for every pair, which makes anything added to them look far more valuable than it is.
+
+# %%
+grid = R["grid"]
+adds = [("none", "human only"), ("llm", "+ LLM labels"), ("llmf", "+ LLM labels, verified"),
+        ("synth", "+ generated v18"), ("both", "+ LLM labels and v18")]
+budgets = [0, 100, 250, 500, 1000]
+tab = pd.DataFrame({label: {b: grid[str(b)].get(a, {}).get("f1") for b in budgets}
+                    for a, label in adds}).rename_axis("human-labelled sentences")
+ax = tab.plot(marker="o", figsize=(7, 4), ylabel="validation micro-F1", xticks=budgets)
+ax.set_xticklabels(budgets)
+tab.round(3).fillna("-")   # no human-only arm exists at a budget of 0
+
+# %% [markdown]
+# The configurations validation chose, scored once on the test set:
+
+# %%
+order = ["test-b0-synth", "test-b0-llm", "test-b0-llmf", "test-b1000-none", "test-b1000-llmf", "test-bfull-none"]
+names = {"test-b0-synth": "generated v18", "test-b0-llm": "model labels",
+         "test-b0-llmf": "model labels, checked", "test-b1000-none": "1,000 human only",
+         "test-b1000-llmf": "1,000 human + checked model labels", "test-bfull-none": "all human"}
+tt = pd.DataFrame({names[k]: {"human sentences": int(T[k]["human_sentences"]), "F1": T[k]["f1"], "sd": T[k]["sd"],
+                              "P": T[k]["p"], "R": T[k]["r"]} for k in order}).T
+tt["share of all human"] = (tt["F1"] / T["test-bfull-none"]["f1"]).round(3)
+tt
+
+# %% [markdown]
+# With no human labels, checked model labels reach 90% of full human supervision, within 0.02 of 1,000 human-labelled sentences on their own; with 1,000 human sentences, 42% of the set, they reach 96%. Generated text reaches 65%, and added to model labels it lowered F1 at every budget on validation. The write-up gives these results with their uncertainties.
+
+# %% [markdown]
+# ## 6. Applying this to another task
+#
+# The machinery carries over unchanged: specification, render and generate; the two-stage split between stored model output and deterministic instance building; the verifier's numbered-mention question; and the diagnostics in section 2, which need only a specification with a construction field and a sample of real sentences classified the same way. What is specific to DDI is the label set, the guideline conventions in the annotator's and verifier's prompts, the drug vocabulary, and the pair structure.
+#
+# Checks worth running before generating anything:
+#
+# - Compare model labels on real text with generated text on the same evaluation set before improving either.
+# - Build specifications and measure each construction's label purity and the uncertainty coefficient against a classified corpus sample; both are free.
+# - Train every comparison to a minimum number of optimisation steps, not a fixed number of epochs.
+# - Before trusting a filter, count what it removes by category.
+# - Choose on a held-out split, freeze the choice, and test once.
 
 # %% [markdown]
 # ## Optional: train on a sample
 #
-# NOTE: needs a GPU. Reproduces the shape of the composition result on 400-sentence samples, not the logged figures.
+# Needs a GPU. Reproduces the shape of the pair-count result on the 400-sentence samples, not the logged figures.
 
 # %%
 # dev = human_sentences("dev")
 # for v in ["v13", "v14", "v18"]:
 #     print(v, lib.train_eval(synth[v], dev, seeds=(0,)))
-
-# %% [markdown]
-# ## What we would do differently
-#
-# NOTE: head-to-head first; shortcuts arrive one at a time; measure constructions against the corpus before generating; check designs in spec space for free; watch which way filters are biased.
