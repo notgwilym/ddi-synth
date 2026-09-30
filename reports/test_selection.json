@@ -1,0 +1,55 @@
+{
+ "frozen_at": "2026-09-30T04:05:10+00:00",
+ "chosen_on": "validation, reports/grid.jsonl",
+ "seeds": [
+  0,
+  1,
+  2,
+  3,
+  4
+ ],
+ "arms": [
+  {
+   "arm": "test-b0-llmf",
+   "stage": "no human annotation",
+   "budget": 0,
+   "addition": "llmf",
+   "why": "best on val at a budget of 0 (0.756)"
+  },
+  {
+   "arm": "test-b0-llm",
+   "stage": "no human annotation",
+   "budget": 0,
+   "addition": "llm",
+   "why": "comparison: the same labels without verification (val 0.677)"
+  },
+  {
+   "arm": "test-b0-synth",
+   "stage": "no human annotation",
+   "budget": 0,
+   "addition": "synth",
+   "why": "comparison: generated v18 text alone (val 0.465)"
+  },
+  {
+   "arm": "test-b1000-llmf",
+   "stage": "1,000 human sentences",
+   "budget": 1000,
+   "addition": "llmf",
+   "why": "best on val at 1,000 (0.796)"
+  },
+  {
+   "arm": "test-b1000-none",
+   "stage": "1,000 human sentences",
+   "budget": 1000,
+   "addition": "none",
+   "why": "comparison: human labels alone (val 0.764)"
+  },
+  {
+   "arm": "test-bfull-none",
+   "stage": "all human annotation",
+   "budget": "full",
+   "addition": "none",
+   "why": "ceiling: every sentence in the pool human-labelled"
+  }
+ ]
+}
