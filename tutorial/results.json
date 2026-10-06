@@ -2,16 +2,18 @@
  "_note": "Every number is recomputed from committed runs/*.json by tutorial/build_results.py. See run_ids.",
  "trajectory": {
   "v13": {
-   "f1": 0.285,
-   "sd": null,
-   "p": 0.186,
-   "r": 0.613,
-   "n_seeds": 1,
+   "f1": 0.279,
+   "sd": 0.011,
+   "p": 0.184,
+   "r": 0.588,
+   "n_seeds": 3,
    "run_ids": [
-    "20260727-122000-6d8adf"
+    "20260730-172510-6e4db9",
+    "20260730-172652-2af335",
+    "20260730-172833-026ee2"
    ],
-   "first_run": "2026-07-27",
-   "caveat": "single seed; trained on composed dataset 20260727-121745-bafaa8 (padded to 85% NONE), not the raw v13 generation"
+   "first_run": "2026-07-30",
+   "caveat": "three seeds from the masking study, scored on the development set less three pairs whose overlapping spans could not be marked (4,240 pairs)"
   },
   "v14": {
    "f1": 0.359,

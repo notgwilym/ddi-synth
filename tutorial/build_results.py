@@ -57,10 +57,10 @@ def main():
         "_note": "Every number is recomputed from committed runs/*.json by "
                  "tutorial/build_results.py. See run_ids.",
         "trajectory": {
-            "v13": {**pick(lambda r: r["run_id"] == "20260727-122000-6d8adf"),
-                    "caveat": "single seed; trained on composed dataset "
-                              "20260727-121745-bafaa8 (padded to 85% NONE), "
-                              "not the raw v13 generation"},
+            "v13": {**pick(lambda r: N(r) == "masking synthetic/markers/aligned"),
+                    "caveat": "three seeds from the masking study, scored on the development "
+                              "set less three pairs whose overlapping spans could not be marked "
+                              "(4,240 pairs)"},
             "v14": pick(lambda r: D(r) == "v14-full" and "verifier pruning" in N(r)),
             "v15": pick(lambda r: D(r) == "v15" and N(r) == "v15"),
             "v17": pick(lambda r: D(r) == "v17" and N(r).startswith("v17")),

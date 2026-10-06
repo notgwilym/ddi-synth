@@ -20,3 +20,8 @@ env/
 
 # adjacent work
 adjacent_work/
+
+*.rej
+executed*.ipynb
+tree.txt
+.DS_Store

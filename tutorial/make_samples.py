@@ -23,7 +23,7 @@ import argparse
 import json
 import random
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import sys
@@ -51,8 +51,27 @@ SPEC_KEEP = ["frame", "kind", "assertions", "modifiers", "variants", "positives"
 _SUFFIX = re.compile(r":s\d+$")
 
 
-def read_specs(gen_id):
-    """spec_index -> trimmed spec. Empty dict if the raw file did not survive."""
+def find_raw(version, cfg, instances):
+    """The generation id whose raw file holds this dataset's specifications.
+
+    Sentence ids encode it as synth:{gen_id}:{spec_index}:s{n}, which is more reliable
+    than the table above: v13's dataset was built from a raw file not named v13.jsonl.
+    Returns None, after listing likely files, if nothing matches."""
+    from_ids = Counter(r["sent_id"].split(":")[1] for r in instances
+                       if r["sent_id"].startswith("synth:"))
+    for g in dict.fromkeys([g for g, _ in from_ids.most_common()] + [cfg["gen_id"]]):
+        if (RAW / f"{g}.jsonl").exists():
+            return g
+    near = sorted(p.name for p in RAW.glob(f"*{version.lstrip('v')}*.jsonl"))
+    print(f"{version}: no raw file for gen ids {list(from_ids)[:5]}; files that look close: {near[:10]}")
+    return None
+
+
+def read_specs(gen_id, render=None):
+    """spec_index -> trimmed spec. Empty dict if the raw file did not survive.
+
+    With a renderer, each trimmed spec also keeps `prompt`: the user message the model
+    was sent, rebuilt from the full specification (rendering is deterministic)."""
     path = RAW / f"{gen_id}.jsonl"
     if not path.exists():
         return {}, False
@@ -68,6 +87,8 @@ def read_specs(gen_id):
         if idx is None:
             continue
         trimmed = {k: spec[k] for k in SPEC_KEEP if k in spec}
+        if render is not None:
+            trimmed["prompt"] = render(spec)
         trimmed["entities"] = [e.get("surface") for e in spec.get("entities") or []]
         out[idx] = trimmed
     return out, True
@@ -117,7 +138,13 @@ def main(out_dir, n_sentences, seed):
 
     for version, cfg in VERSIONS.items():
         instances, manifest = load_dataset(cfg["dataset_id"])
-        specs, raw_found = read_specs(cfg["gen_id"])
+        gen_id = find_raw(version, cfg, instances) or cfg["gen_id"]
+        cfg = {**cfg, "gen_id": gen_id}
+        render = None
+        if version == "v18":                  # v18's renderer; older versions' prompt code has since changed
+            from ddi import prompt_v18
+            render = prompt_v18.render
+        specs, raw_found = read_specs(gen_id, render)
         by_sent = group_by_sentence(instances)
 
         ids = sorted(by_sent)

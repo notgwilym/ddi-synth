@@ -100,12 +100,8 @@ def flatten(records):
 
 
 def sentence_label(record):
-    """MULT if the sentence contains multiple positive pairs of different labels.
-    Else POS if any pair is positive. Else NONE.
-    """
-    positive_labels = {p["label"] for p in record["pairs"] if p["label"] != "NONE"}
-
-    return "MULT" if len(positive_labels) > 1 else "POS" if positive_labels else "NONE"
+    """POS if any pair is positive, else NONE."""
+    return "POS" if any(p["label"] != "NONE" for p in record["pairs"]) else "NONE"
 
 
 def masked(record):
@@ -134,39 +130,7 @@ def masked(record):
         text = text[:b] + "DRUG" + text[e:]
     return text
 
-
-class GuessGame:
-    """Show masked sentences, hide their labels, score the reader's guesses.
-
-    Plumbing only. The point of the game is what the reader notices while playing it.
-    """
-
-    def __init__(self, records, n=10, seed=0):
-        rng = random.Random(seed)
-        pos = [r for r in records if sentence_label(r) == "POS"]
-        neg = [r for r in records if sentence_label(r) == "NONE"]
-        k = n // 2
-        self.items = rng.sample(pos, min(k, len(pos))) + rng.sample(neg, min(n - k, len(neg)))
-        rng.shuffle(self.items)
-
-    def show(self):
-        for i, r in enumerate(self.items):
-            print(f"{i:>2}.  {masked(r)}\n")
-
-    def score(self, guesses):
-        truth = [sentence_label(r) for r in self.items]
-        guesses = [g.upper().strip() for g in guesses]
-        right = sum(g == t for g, t in zip(guesses, truth))
-        print(f"{right} of {len(truth)} correct\n")
-        for i, (g, t, r) in enumerate(zip(guesses, truth, self.items)):
-            frame = (r.get("spec") or {}).get("frame") or \
-                    "+".join((r.get("spec") or {}).get("assertions") or []) or "-"
-            mark = " " if g == t else "x"
-            print(f" {mark} {i:>2}. guessed {g:<4} was {t:<4}  construction: {frame}")
-        return right / len(truth)
-
-
-def train_eval(train_records, eval_records, seeds=(0,), epochs=3):
+def train_eval(train_records, eval_records, seeds=(0,)):
     """Train BiomedBERT on sentence records and score it. Optional throughout: every
     number the notebook argues from is already in results.json, so nothing here is
     needed to follow the argument. It exists so a reader can reproduce the shape of a
@@ -174,7 +138,7 @@ def train_eval(train_records, eval_records, seeds=(0,), epochs=3):
     from ddi.train import train_and_eval
 
     base = {"model_name": "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext",
-            "epochs": epochs, "lr": 2e-5, "batch_size": 32, "max_length": 256,
+            "epochs": 3, "lr": 2e-5, "batch_size": 32, "max_length": 256,
             "neg_ratio": None, "render_mode": "markers"}
     tr, ev = flatten(train_records), flatten(eval_records)
     out = []
