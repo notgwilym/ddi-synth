@@ -1,6 +1,6 @@
 # ddi-synth
 
-Code, run records and a tutorial for an EPSRC vacation internship in the AI4BioMed Lab, University of Glasgow (summer 2026, supervised by Jake Lever).
+Code, run records, a report and linked tutorial for an EPSRC vacation internship in the AI4BioMed Lab, University of Glasgow (summer 2026, supervised by Jake Lever).
 
 The project asks how a large language model is best used to produce training data for drug-drug interaction (DDI) extraction: by writing labelled sentences, or by labelling real ones. A BiomedBERT classifier is fine-tuned on each kind of data and scored on DDI-2013.
 
@@ -22,7 +22,7 @@ Test scores, micro-F1 over the four positive labels, five seeds each:
 
 ## Tutorial
 
-`tutorial/ddi_tutorial.ipynb` walks through the analyses behind the report on samples of the project's own data. No GPU or API access needed.
+Alongside the report there is a tutorial, `tutorial/ddi_tutorial.ipynb`, that walks through the analyses behind the report on samples of the project's own data. No GPU or API access needed.
 
 ```bash
 git clone https://github.com/notgwilym/ddi-synth.git
